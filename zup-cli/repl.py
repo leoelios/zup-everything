@@ -359,7 +359,11 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
     from prompt_toolkit.styles import Style as PTStyle
 
     # Build a human-readable description of what the tool will do
+    # preview_lines: plain strings (uniform style)
+    # preview_tokens: list of (style, text) tuples — used for colored diffs
     preview_lines: list[str] = []
+    preview_tokens: list = []
+
     if name == "write_file":
         path = parameters.get("path", "?")
         content = parameters.get("content", "")
@@ -370,16 +374,40 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         if len(lines) > 10:
             preview_lines.append(f"    ... ({len(lines) - 10} more lines)")
     elif name == "edit_file":
+        import os as _os
         path = parameters.get("path", "?")
         old_str = parameters.get("old_str", "")
         new_str = parameters.get("new_str", "")
-        preview_lines = [
-            f"  Edit file: {path}", "",
-            "  Replace:",
-        ] + [f"  - {ln}" for ln in old_str.splitlines()] + [
-            "",
-            "  With:",
-        ] + [f"  + {ln}" for ln in new_str.splitlines()]
+        removed = len(old_str.splitlines())
+        added = len(new_str.splitlines())
+        preview_tokens = [
+            ("class:title", f"\n  ● Update({path})\n"),
+            ("class:preview", f"  ⎿  Added {added} lines, removed {removed} lines\n\n"),
+        ]
+        try:
+            fpath = _os.path.expanduser(path)
+            if not _os.path.isabs(fpath):
+                fpath = _os.path.join(_os.getcwd(), fpath)
+            with open(fpath, "r", encoding="utf-8", errors="replace") as _f:
+                file_content = _f.read()
+            all_lines = file_content.splitlines()
+            idx = file_content.find(old_str)
+            if idx != -1:
+                start_line = file_content[:idx].count("\n")
+                old_lines_list = old_str.splitlines()
+                end_line = start_line + len(old_lines_list)
+                ctx_start = max(0, start_line - 3)
+                ctx_end = min(len(all_lines), end_line + 3)
+                for i in range(ctx_start, start_line):
+                    preview_tokens.append(("class:diff_ctx", f"    {all_lines[i]}\n"))
+                for ln in old_lines_list:
+                    preview_tokens.append(("class:diff_remove", f"  - {ln}\n"))
+                for ln in new_str.splitlines():
+                    preview_tokens.append(("class:diff_add", f"  + {ln}\n"))
+                for i in range(end_line, ctx_end):
+                    preview_tokens.append(("class:diff_ctx", f"    {all_lines[i]}\n"))
+        except Exception:
+            pass
     elif name == "bash":
         cmd = parameters.get("command", "?")
         preview_lines = [f"  Run command:", f"    {cmd}"]
@@ -421,6 +449,8 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         event.app.exit()
 
     def _get_preview():
+        if preview_tokens:
+            return preview_tokens
         lines = [("class:title", f"\n  Confirm action: {name}\n\n")]
         for ln in preview_lines:
             lines.append(("class:preview", ln + "\n"))
@@ -437,10 +467,13 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         return lines
 
     style = PTStyle.from_dict({
-        "title":    "bold yellow",
-        "preview":  "cyan",
-        "selected": "bold white reverse",
-        "option":   "",
+        "title":       "bold yellow",
+        "preview":     "cyan",
+        "selected":    "bold white reverse",
+        "option":      "",
+        "diff_add":    "bold green",
+        "diff_remove": "bold red",
+        "diff_ctx":    "",
     })
 
     # Fixed height for options panel: header line + N options + blank line
