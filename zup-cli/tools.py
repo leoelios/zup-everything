@@ -48,6 +48,9 @@ def write_file(path: str, content: str) -> str:
         return f"Error writing file: {e}"
 
 
+_FULL_REWRITE_THRESHOLD = 0.6  # if old_str covers ≥60% of file lines, do a full rewrite
+
+
 def edit_file(path: str, old_str: str, new_str: str) -> str:
     fpath = _resolve(path)
     if not os.path.exists(fpath):
@@ -66,6 +69,16 @@ def edit_file(path: str, old_str: str, new_str: str) -> str:
             )
 
         new_content = content.replace(old_str, new_str, 1)
+
+        # Heuristic: if the replaced chunk covers most of the file, skip the
+        # string-search overhead and just overwrite the whole file directly.
+        total_lines = max(len(content.splitlines()), 1)
+        old_lines   = len(old_str.splitlines())
+        if old_lines / total_lines >= _FULL_REWRITE_THRESHOLD:
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            return f"Rewrote {fpath} (full overwrite — change spanned {old_lines}/{total_lines} lines)"
+
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(new_content)
         return f"Edited {fpath}"
