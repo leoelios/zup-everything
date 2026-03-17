@@ -53,11 +53,8 @@ class _StreamingView:
         yield header
 
         if self.text:
-            lines = self.text.splitlines()
-            shown = lines[-self._PREVIEW_LINES:]
-            for line in shown:
-                t = Text("  " + line, style="color(8)", overflow="fold")
-                yield t
+            tail = self.text[-450:].replace("\n", " ").strip()
+            yield Text("  " + tail, style="color(8)", overflow="fold")
 
 
 _stream_view: _StreamingView | None = None
@@ -249,8 +246,11 @@ def print_thinking(text: str) -> None:
 def print_tool_use(name: str, parameters: dict) -> None:
     params_preview = {}
     for k, v in parameters.items():
-        if isinstance(v, str) and len(v) > 60:
-            params_preview[k] = v[:57] + "..."
+        if k in ("old_str", "new_str") and isinstance(v, str) and len(v) > 30:
+            params_preview[k] = v[:27] + "..."
+            continue
+        if isinstance(v, str) and len(v) > 100:
+            params_preview[k] = v[:97] + "..."
         else:
             params_preview[k] = v
     params_str = ", ".join(f"{k}: {json.dumps(v)}" for k, v in params_preview.items())
