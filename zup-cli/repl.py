@@ -22,8 +22,7 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/reset",            "/reset",                   "Start a new conversation (new ID)"),
     ("/debug",            "/debug",                   "Show debug log path"),
     ("/cwd",              "/cwd [path]",               "Show or change working directory"),
-    ("/model",            "/model",                   "Switch model interactively"),
-    ("/models",           "/models",                  "List all available AI models"),
+    ("/model",            "/model",                   "List or switch LLM model interactively"),
     ("/ks list",          "/ks list [page] [size]",    "List knowledge sources"),
     ("/ks objects",       "/ks objects <slug> [page]", "List objects in a knowledge source"),
     ("/ks details",       "/ks details <slug>",        "Get knowledge source details"),
@@ -349,7 +348,7 @@ HELP_TEXT = """
   /reset                        Start a new conversation (generates a new ID)
   /debug                        Show debug log path (start with --debug to enable)
   /cwd [path]                   Show or change working directory
-  /models                       List available AI models
+  /model                        List or switch available AI models
   /ks list [page] [size]        List knowledge sources
   /ks objects <slug> [page]     List objects inside a knowledge source
   /ks details <slug>            Get knowledge source details
@@ -404,15 +403,6 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
     if head in ("/exit", "/quit", "/q"):
         display.print_info("Goodbye!")
         sys.exit(0)
-
-    if head == "/models":
-        try:
-            from api_client import list_models
-            data = list_models()
-            _print_models(data)
-        except Exception as e:
-            display.print_error(str(e))
-        return True
 
     if head == "/model":
         chosen = _pick_model(agent.selected_model)

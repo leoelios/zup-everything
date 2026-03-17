@@ -29,3 +29,5 @@
  .coverage
  htmlcov/
  .pytest_cache/
+
+.temp/
