@@ -95,6 +95,24 @@ def chat_stream(
 
 
 # ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+
+AGENT_BASE = "https://genai-agent-tools-api.stackspot.com"
+
+
+def list_agents(page: int = 1, size: int = 100, visibility: str = "personal") -> dict:
+    resp = httpx.get(
+        f"{AGENT_BASE}/v4/agents",
+        headers=_headers(),
+        params={"page": page, "size": size, "visibility_list": visibility},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
 

@@ -286,6 +286,8 @@ class Agent:
         cfg = get_config()
         self.selected_model: Optional[str] = cfg.get("selected_model_id")
         self.selected_model_name: Optional[str] = cfg.get("selected_model_name")
+        self.selected_agent_id: Optional[str] = cfg.get("selected_agent_id")
+        self.selected_agent_name: Optional[str] = cfg.get("selected_agent_name")
         self.on_tool_use = on_tool_use or (lambda n, p: None)
         self.on_tool_result = on_tool_result or (lambda n, r: None)
         self.on_thinking = on_thinking or (lambda t: None)
@@ -301,6 +303,16 @@ class Agent:
         cfg = get_config()
         cfg["selected_model_id"] = model_id
         cfg["selected_model_name"] = model_name
+        save_config(cfg)
+
+    def set_agent(self, agent_id: str, agent_name: str):
+        """Set active agent and persist the choice."""
+        from config import get_config, save_config
+        self.selected_agent_id = agent_id
+        self.selected_agent_name = agent_name
+        cfg = get_config()
+        cfg["selected_agent_id"] = agent_id
+        cfg["selected_agent_name"] = agent_name
         save_config(cfg)
 
     def reset(self):
@@ -331,12 +343,14 @@ class Agent:
             return chat_stream(
                 full_prompt,
                 conversation_id=self.conversation_id,
+                agent_id=self.selected_agent_id,
                 selected_model=self.selected_model,
             )
         else:
             result = chat_nonstream(
                 full_prompt,
                 conversation_id=self.conversation_id,
+                agent_id=self.selected_agent_id,
                 selected_model=self.selected_model,
             )
             if not self._initialized:

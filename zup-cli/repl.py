@@ -23,6 +23,7 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/debug",            "/debug",                   "Show debug log path"),
     ("/cwd",              "/cwd [path]",               "Show or change working directory"),
     ("/model",            "/model",                   "List or switch LLM model interactively"),
+    ("/agent",            "/agent",                   "List or switch AI agent interactively"),
     ("/ks list",          "/ks list [page] [size]",    "List knowledge sources"),
     ("/ks objects",       "/ks objects <slug> [page]", "List objects in a knowledge source"),
     ("/ks details",       "/ks details <slug>",        "Get knowledge source details"),
@@ -154,6 +155,126 @@ def _pick_model(current_id: Optional[str]) -> Optional[tuple[str, str]]:
             if current:
                 lines.append((current, tag))
             lines.append(("", f"   {mid}\n" if not selected else f"   {mid}\n"))
+        return lines
+
+    style = PTStyle.from_dict({
+        "title":    "bold cyan",
+        "selected": "bold white reverse",
+        "item":     "",
+        "current":  "dim green",
+    })
+
+    layout = Layout(
+        HSplit([
+            Window(content=FormattedTextControl(_get_text, focusable=True)),
+        ])
+    )
+
+    app: Application = Application(
+        layout=layout,
+        key_bindings=kb,
+        style=style,
+        full_screen=False,
+        mouse_support=False,
+    )
+    app.run()
+
+    return state["result"]
+
+
+def _pick_agent(current_id: Optional[str]) -> Optional[tuple[str, str]]:
+    """
+    Show an interactive arrow-key selection list of available agents.
+    Returns (agent_id, agent_name), or None if cancelled.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style as PTStyle
+
+    try:
+        from api_client import list_agents
+        raw = list_agents()
+    except Exception as e:
+        display.print_error(f"Could not fetch agents: {e}")
+        return None
+
+    if isinstance(raw, dict):
+        items = (
+            raw.get("items") or raw.get("data") or
+            raw.get("agents") or raw.get("content") or []
+        )
+    else:
+        items = raw if isinstance(raw, list) else []
+
+    if not items:
+        display.print_info("No agents available.")
+        return None
+
+    entries: list[tuple[str, str]] = []
+    for a in items:
+        aid = (
+            a.get("id") or a.get("agent_id") or
+            a.get("agentId") or a.get("slug") or ""
+        )
+        aname = (
+            a.get("name") or a.get("display_name") or
+            a.get("displayName") or a.get("title") or aid
+        )
+        if aid:
+            entries.append((aid, aname))
+
+    if not entries:
+        display.print_info("No selectable agents found.")
+        return None
+
+    state = {"index": 0, "result": None, "done": False}
+    if current_id:
+        for i, (aid, _) in enumerate(entries):
+            if aid == current_id:
+                state["index"] = i
+                break
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _up(event):
+        state["index"] = (state["index"] - 1) % len(entries)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _down(event):
+        state["index"] = (state["index"] + 1) % len(entries)
+
+    @kb.add("enter")
+    def _select(event):
+        state["result"] = entries[state["index"]]
+        state["done"] = True
+        event.app.exit()
+
+    @kb.add("c-c")
+    @kb.add("escape")
+    @kb.add("q")
+    def _cancel(event):
+        state["done"] = True
+        event.app.exit()
+
+    def _get_text():
+        lines = [("class:title", " Select agent  ↑/↓ or j/k · Enter to confirm · Esc to cancel\n\n")]
+        for i, (aid, aname) in enumerate(entries):
+            selected = i == state["index"]
+            marker = "  ● " if selected else "  ○ "
+            cursor = "class:selected" if selected else "class:item"
+            tag = " [current]" if aid == current_id else ""
+            current_style = "class:current" if aid == current_id else ""
+            lines.append((cursor, marker))
+            lines.append((cursor, aname))
+            if current_style:
+                lines.append((current_style, tag))
+            lines.append(("", f"   {aid}\n"))
         return lines
 
     style = PTStyle.from_dict({
@@ -349,6 +470,7 @@ HELP_TEXT = """
   /debug                        Show debug log path (start with --debug to enable)
   /cwd [path]                   Show or change working directory
   /model                        List or switch available AI models
+  /agent                        List or switch available AI agents
   /ks list [page] [size]        List knowledge sources
   /ks objects <slug> [page]     List objects inside a knowledge source
   /ks details <slug>            Get knowledge source details
@@ -407,12 +529,21 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
     if head == "/model":
         chosen = _pick_model(agent.selected_model)
         if chosen:
-            # chosen is (id, display_name)
             model_id, model_name = chosen
             agent.set_model(model_id, model_name)
             display.print_info(f"Model set to: {model_name}")
         else:
             display.print_info("No model selected.")
+        return True
+
+    if head == "/agent":
+        chosen = _pick_agent(agent.selected_agent_id)
+        if chosen:
+            agent_id, agent_name = chosen
+            agent.set_agent(agent_id, agent_name)
+            display.print_info(f"Agent set to: {agent_name}")
+        else:
+            display.print_info("No agent selected.")
         return True
 
     if head == "/ks":
@@ -584,8 +715,11 @@ def start_repl(initial_prompt: Optional[str] = None):
             model_tag = (
                 f" [{agent.selected_model_name}]" if agent.selected_model_name else ""
             )
+            agent_tag = (
+                f" ({agent.selected_agent_name})" if agent.selected_agent_name else ""
+            )
             user_input = session.prompt(
-                [("class:prompt", f"{cwd_short}{model_tag}> ")]
+                [("class:prompt", f"{cwd_short}{model_tag}{agent_tag}> ")]
             ).strip()
         except KeyboardInterrupt:
             print()
