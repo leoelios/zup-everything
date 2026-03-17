@@ -69,6 +69,46 @@ pyinstaller --onefile --name=zup --console main.py
 - `--add-data="src;dest"` — Include additional files
 - `--hidden-import=module` — Force include a module
 
+## Known Issues & Fixes (from real builds)
+
+### 1. UnicodeEncodeError with emoji characters on Windows
+
+**Symptom:**
+```
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f528'
+```
+
+**Fix:** Run the build script with UTF-8 mode enabled:
+```bash
+PYTHONUTF8=1 python build.py
+```
+
+Or set the environment variable permanently:
+```bash
+set PYTHONUTF8=1
+python build.py
+```
+
+---
+
+### 2. `pathlib` backport incompatible with PyInstaller
+
+**Symptom:**
+```
+ERROR: The 'pathlib' package is an obsolete backport of a standard library package
+and is incompatible with PyInstaller.
+```
+
+**Fix:** Uninstall the obsolete `pathlib` backport before building:
+```bash
+pip uninstall pathlib -y
+python build.py
+```
+
+> This package is a backport that conflicts with Python 3's built-in `pathlib`. Safe to remove on Python 3.4+.
+
+---
+
 ## Troubleshooting
 
 ### "Module not found" errors
@@ -81,7 +121,7 @@ pyinstaller --onefile --hidden-import=missing_module main.py
 
 ### Large executable size
 
-The executable includes the Python interpreter and all dependencies (~15-30 MB is normal).
+The executable includes the Python interpreter and all dependencies (~35-40 MB is normal for this project).
 
 To reduce size:
 - Use `--exclude-module` to remove unused packages
