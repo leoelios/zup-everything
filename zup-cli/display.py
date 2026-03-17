@@ -154,17 +154,85 @@ def stream_stop() -> None:
 
 
 def print_welcome(model_name: str | None = None):
+    import getpass
+    import os
+    from pathlib import Path
+    from rich.table import Table
+
+    # Load icon
+    icon_path = Path(__file__).parent / "assets" / "icon.txt"
+    try:
+        icon_lines = icon_path.read_text(encoding="utf-8").rstrip().splitlines()
+    except Exception:
+        icon_lines = []
+
+    # Username + config
+    username = getpass.getuser()
+    try:
+        from config import get_config
+        cfg = get_config()
+        realm = cfg.get("realm", "")
+    except Exception:
+        realm = ""
+
+    try:
+        cwd = "~" + os.sep + str(Path(os.getcwd()).relative_to(Path.home()))
+    except ValueError:
+        cwd = os.getcwd()
+
+    # ── Left column ──────────────────────────────────────────────────────────
+    left = Text(justify="center")
+    left.append("\n")
+    if icon_lines:
+        for line in icon_lines:
+            left.append(line + "\n", style="bold cyan")
+    left.append("\n")
+    left.append(f"Welcome back {username}!\n", style="bold white")
+    left.append("\n")
+    meta_parts = []
     if model_name:
-        model_line = f"\n[dim]Model:[/dim] [bold white]{model_name}[/bold white]"
-    else:
-        model_line = "\n[dim]Model: none selected \u2014 use /model to pick one[/dim]"
+        meta_parts.append(model_name)
+    if realm:
+        meta_parts.append(realm)
+    if meta_parts:
+        left.append(" · ".join(meta_parts) + "\n", style="dim")
+    left.append(cwd + "\n", style="dim")
+
+    # ── Right column ─────────────────────────────────────────────────────────
+    right = Text()
+    right.append("\n")
+    right.append("Tips for getting started\n", style="bold cyan")
+    right.append("  Run ", style="")
+    right.append("/help", style="bold white")
+    right.append(" to see all available commands\n", style="")
+    right.append("  Type any message and press ", style="dim")
+    right.append("Enter", style="bold dim")
+    right.append(" to chat with the AI\n", style="dim")
+    right.append("  Use ", style="dim")
+    right.append("/model", style="bold dim")
+    right.append(" or ", style="dim")
+    right.append("/agent", style="bold dim")
+    right.append(" to switch AI settings\n", style="dim")
+    right.append("  Use ", style="dim")
+    right.append("/ks", style="bold dim")
+    right.append(" to manage knowledge sources\n", style="dim")
+    right.append("\u2500" * 44 + "\n", style="dim")
+    right.append("Recent activity\n", style="bold cyan")
+    right.append("  No recent activity\n", style="dim")
+
+    # ── Two-column grid ───────────────────────────────────────────────────────
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(min_width=28, ratio=1)
+    grid.add_column(ratio=2)
+    grid.add_row(left, right)
+
     console.print(
-        Panel.fit(
-            "[bold cyan]Zup CLI[/bold cyan]  [dim]AI coding assistant \u00b7 StackSpot AI[/dim]\n"
-            "[dim]Type a message, or /help for commands. Ctrl+C to interrupt.[/dim]"
-            + model_line,
+        Panel(
+            grid,
+            title="[bold]Zup CLI[/bold]",
             box=box.ROUNDED,
             border_style="cyan",
+            padding=(0, 1),
         )
     )
     console.print()

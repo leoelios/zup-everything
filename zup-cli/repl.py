@@ -624,7 +624,21 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
 def _process(message: str, agent: Agent):
     """Run the agent for one user message and display the result."""
     import logger
+    from modifiers import extract_modifiers, apply_modifiers
     logger.log_user_input(message)
+
+    # ── Modifier detection ───────────────────────────────────────────────────
+    modifiers, clean_message = extract_modifiers(message)
+    if modifiers and clean_message:
+        result = apply_modifiers(modifiers, clean_message, agent)
+        if result is not None:
+            logger.log_agent_response(result)
+            display.print_separator()
+            display.print_response(result)
+            return
+        # Unknown modifier — fall through to normal processing with clean prompt
+        message = clean_message
+    # ────────────────────────────────────────────────────────────────────────
 
     # --- streaming + spinner-aware callback wrappers -----------------------
     _orig_thinking    = agent.on_thinking
