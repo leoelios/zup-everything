@@ -152,7 +152,7 @@ def bash(command: str, timeout: int = 60) -> str:
         if result.stderr:
             parts.append(f"[stderr]\n{result.stderr.rstrip()}")
         if result.returncode != 0:
-            parts.append(f"[exit {result.returncode}]")
+            parts.append(f"[exit_code {result.returncode}]")
         return "\n".join(parts) if parts else "(no output)"
     except subprocess.TimeoutExpired:
         return f"Command timed out after {timeout}s"

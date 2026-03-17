@@ -44,6 +44,12 @@ THINKING_RE = re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL)
 _ERROR_PREFIXES = ("Unknown tool", "Bad parameters", "Tool '", "Error", "error:")
 
 
+def _is_bash_error(result: str) -> bool:
+    """Detect non-zero exit codes from bash commands."""
+    import re
+    return bool(re.search(r"\[exit_code \d*[1-9]\d*\]", result))
+
+
 def parse_thinking(text: str) -> str:
     """Extract content from <thinking>...</thinking> blocks."""
     blocks = THINKING_RE.findall(text)
@@ -108,7 +114,7 @@ def strip_tool_calls(text: str) -> str:
 
 
 def _is_error(result: str) -> bool:
-    return any(result.startswith(p) for p in _ERROR_PREFIXES)
+    return any(result.startswith(p) for p in _ERROR_PREFIXES) or _is_bash_error(result)
 
 
 def execute_tool(name: str, parameters: dict, parse_error: str | None = None) -> str:
@@ -153,7 +159,10 @@ def _correction_note() -> str:
         "2. Fix the tool name or parameters exactly as shown in the error.\n"
         "3. For edit_file errors: first call read_file to get the exact text, "
         "then use that exact text as old_str.\n"
-        "4. Retry only the failed calls — do not repeat successful ones.\n"
+        "4. For bash errors: check [exit_code N] and [stderr] output. Reason about "
+        "WHY the command failed (missing dependency, wrong path, permission, syntax error, etc.) "
+        "and retry with a corrected command or a different approach.\n"
+        "5. Retry only the failed calls — do not repeat successful ones.\n"
         "</system_note>"
     )
 
@@ -229,6 +238,8 @@ search_files     – Search file contents with a regex.
 
 bash             – Execute a shell command.
   params: {{"command": "<string>", "timeout": <int (optional, default 60)>}}
+  output markers: [stderr] precedes error output; [exit_code N] (N≠0) means the command failed.
+  On failure: reason about the cause from [stderr]/[exit_code], then retry with a fix or try an alternative approach.
 
 list_knowledge_sources – List available knowledge sources.
   params: {{"page": <int (optional)>, "size": <int (optional)>}}
