@@ -758,10 +758,12 @@ def _process(message: str, agent: Agent):
     def _on_tool_use(name: str, params: dict):
         display.stream_stop()
         _orig_tool_use(name, params)
-        display.spinner_start(f"Running {name}…", status=name)
+        if name != "ask_user":
+            display.spinner_start(f"Running {name}…", status=name)
 
     def _on_tool_result(name: str, result: str):
-        display.spinner_stop()
+        if name != "ask_user":
+            display.spinner_stop()
         _orig_tool_result(name, result)
 
     def _on_confirm(name: str, params: dict) -> bool:

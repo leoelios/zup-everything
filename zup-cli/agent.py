@@ -30,6 +30,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "upload_to_knowledge_source": tool_module.upload_to_ks_tool,
     "web_search": tool_module.web_search,
     "fetch_page": tool_module.fetch_page,
+    "ask_user": tool_module.ask_user,
 }
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,7 @@ _TOOL_SIGNATURES: dict[str, str] = {
     "upload_to_knowledge_source":'upload_to_knowledge_source(file_path="<string>", ks_slug="<string>")',
     "web_search":                'web_search(query="<string>", max_results=<int optional, default 6>)',
     "fetch_page":                'fetch_page(url="<string>", selector="<css selector optional>")',
+    "ask_user":                  'ask_user(question="<string>", options=["<opt_a>", "<opt_b>", "<opt_c>"])',
 }
 
 _PARSE_ERROR_SENTINEL = "__PARSE_ERROR__"
@@ -182,6 +184,18 @@ def _completion_note() -> str:
     )
 
 
+def _ask_user_note() -> str:
+    """Appended after an ask_user tool result — allows the model to keep using tools."""
+    return (
+        "\n<system_note>\n"
+        "The user has answered your question via ask_user. "
+        "Process their answer and continue. "
+        "If you need further clarification, call ask_user again. "
+        "NEVER write follow-up questions or option lists as plain text — always use ask_user.\n"
+        "</system_note>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
@@ -222,6 +236,8 @@ Rules:
 - NEVER output file contents as text to the user. If you need to create or modify a file, \
 ALWAYS use write_file or edit_file tools — never paste the file content in your response. \
 Outputting code blocks that represent full file contents without calling a tool is forbidden.
+- NEVER ask the user a question or present options as plain text. \
+ALWAYS use the ask_user tool when you need clarification or want to offer choices.
 
 ## Available Tools
 
@@ -266,6 +282,12 @@ web_search       – Search the web via DuckDuckGo and return ranked results.
 fetch_page       – Fetch a URL and return its readable text content (crawling).
   params: {{"url": "<string>", "selector": "<css selector (optional)>"}}
   Use selector to scope to a specific element, e.g. "article" or "main".
+
+ask_user         – Ask the user a clarifying question with up to 3 choices; the last option is always free-text.
+  params: {{"question": "<string>", "options": ["<opt_a>", "<opt_b>", "<opt_c>"]}}
+  MANDATORY: whenever you need to ask the user any question or present options, you MUST use this
+  tool — NEVER write questions or option lists as plain text in your response.
+  Returns the option chosen (e.g. "a) ...") or the user's typed answer (e.g. "d) ...").
 
 ## Context
 Working directory: {cwd}
@@ -513,7 +535,13 @@ class Agent:
 
             result_parts, had_errors = self._execute_tools(tool_calls)
             tool_block = "\n\n".join(result_parts)
-            suffix = _correction_note() if had_errors else _completion_note()
+            used_ask_user = any(tc["name"] == "ask_user" for tc in tool_calls)
+            if had_errors:
+                suffix = _correction_note()
+            elif used_ask_user:
+                suffix = _ask_user_note()
+            else:
+                suffix = _completion_note()
 
             prompt = (
                 f"{text_part}\n\n{tool_block}{suffix}"
@@ -539,7 +567,13 @@ class Agent:
 
             result_parts, had_errors = self._execute_tools(tool_calls)
             tool_block = "\n\n".join(result_parts)
-            suffix = _correction_note() if had_errors else _completion_note()
+            used_ask_user = any(tc["name"] == "ask_user" for tc in tool_calls)
+            if had_errors:
+                suffix = _correction_note()
+            elif used_ask_user:
+                suffix = _ask_user_note()
+            else:
+                suffix = _completion_note()
 
             prompt = (
                 f"{text_part}\n\n{tool_block}{suffix}"

@@ -261,6 +261,107 @@ def upload_to_ks_tool(file_path: str, ks_slug: str) -> str:
 # ---------------------------------------------------------------------------
 
 _FETCH_CHAR_LIMIT = 12_000  # max chars returned from a single page
+_LABELS = ["a", "b", "c", "d"]
+
+
+def ask_user(question: str, options: list) -> str:
+    """
+    Show an interactive multiple-choice question to the user.
+    options: up to 3 choices provided by the agent (a/b/c).
+    The last option is always d) free-text input by the user.
+    Returns the chosen text or the custom typed answer.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style as PTStyle
+
+    agent_opts = [str(o) for o in list(options)[:3]]
+    all_opts   = agent_opts + ["Other... (type freely)"]
+    labels     = _LABELS[:len(all_opts)]
+
+    state = {"index": 0, "result": None}
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _up(event):
+        state["index"] = (state["index"] - 1) % len(all_opts)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _down(event):
+        state["index"] = (state["index"] + 1) % len(all_opts)
+
+    @kb.add("enter")
+    def _select(event):
+        state["result"] = state["index"]
+        event.app.exit()
+
+    # Letter shortcuts
+    for i, lbl in enumerate(labels):
+        def _make_handler(idx):
+            def _handler(event):
+                state["index"] = idx
+                state["result"] = idx
+                event.app.exit()
+            return _handler
+        kb.add(lbl)(_make_handler(i))
+
+    @kb.add("c-c")
+    @kb.add("escape")
+    def _cancel(event):
+        state["result"] = -1
+        event.app.exit()
+
+    def _get_text():
+        lines = [("class:question", f"\n  {question}\n\n")]
+        for i, (lbl, opt) in enumerate(zip(labels, all_opts)):
+            selected = i == state["index"]
+            marker = "  ● " if selected else "  ○ "
+            style  = "class:selected" if selected else (
+                "class:other" if i == len(all_opts) - 1 else "class:option"
+            )
+            lines.append((style, f"{marker}{lbl}) {opt}\n"))
+        lines.append(("class:hint", "\n  ↑/↓ or a/b/c/d · Enter to confirm · Esc to cancel\n\n"))
+        return lines
+
+    style = PTStyle.from_dict({
+        "question": "bold cyan",
+        "selected": "bold white reverse",
+        "option":   "",
+        "other":    "dim",
+        "hint":     "dim",
+    })
+
+    layout = Layout(HSplit([
+        Window(content=FormattedTextControl(_get_text, focusable=True)),
+    ]))
+
+    app: Application = Application(
+        layout=layout,
+        key_bindings=kb,
+        style=style,
+        full_screen=False,
+        mouse_support=False,
+    )
+    app.run()
+
+    chosen = state["result"]
+
+    if chosen == -1:
+        return "User cancelled without answering."
+
+    # Last option → free-text input
+    if chosen == len(all_opts) - 1:
+        from prompt_toolkit import prompt as pt_prompt
+        answer = pt_prompt("  Your answer: ").strip()
+        return f"d) {answer}" if answer else "User left the free-text answer blank."
+
+    return f"{labels[chosen]}) {all_opts[chosen]}"
 
 
 def web_search(query: str, max_results: int = 6) -> str:
