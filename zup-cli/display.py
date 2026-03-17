@@ -19,6 +19,50 @@ console = Console()
 _live: Live | None = None
 
 
+# ---------------------------------------------------------------------------
+# Streaming live view
+# ---------------------------------------------------------------------------
+
+class _StreamingView:
+    """Live renderable that shows a rolling preview of streamed tokens + token count."""
+
+    _FRAMES = ["✻", "✼", "✽", "✾", "✽", "✼"]
+    _PREVIEW_LINES = 5
+
+    def __init__(self) -> None:
+        self.text = ""
+        self.in_tokens = 0
+        self.out_tokens = 0
+        self._start = time.monotonic()
+        self._tick = 0
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        frame = self._FRAMES[self._tick % len(self._FRAMES)]
+        self._tick += 1
+        elapsed = _fmt_elapsed(time.monotonic() - self._start)
+
+        header = Text()
+        header.append(f"{frame} ", style="bold yellow")
+        header.append("Generating…", style="bold white")
+        header.append(f" ({elapsed})", style="dim")
+        if self.out_tokens:
+            header.append(
+                f"  [in:{self.in_tokens} out:{self.out_tokens}]",
+                style="dim cyan",
+            )
+        yield header
+
+        if self.text:
+            lines = self.text.splitlines()
+            shown = lines[-self._PREVIEW_LINES:]
+            for line in shown:
+                t = Text("  " + line, style="color(8)", overflow="fold")
+                yield t
+
+
+_stream_view: _StreamingView | None = None
+
+
 def _fmt_elapsed(seconds: float) -> str:
     s = int(seconds)
     if s < 60:
@@ -73,6 +117,40 @@ def spinner_start(label: str = "Thinking…", status: str = "thinking") -> None:
 
 def spinner_stop() -> None:
     _stop_live()
+
+
+def stream_start() -> None:
+    """Begin a live streaming view (replaces spinner during LLM generation)."""
+    global _live, _stream_view
+    _stop_live()
+    _stream_view = _StreamingView()
+    _live = Live(
+        _stream_view,
+        console=console,
+        refresh_per_second=12,
+        transient=True,
+    )
+    _live.start()
+
+
+def stream_chunk(text: str) -> None:
+    """Append a streamed token chunk to the live view."""
+    if _stream_view is not None:
+        _stream_view.text += text
+
+
+def stream_tokens(input_tokens: int, output_tokens: int) -> None:
+    """Update the token counters in the live view."""
+    if _stream_view is not None:
+        _stream_view.in_tokens = input_tokens
+        _stream_view.out_tokens = output_tokens
+
+
+def stream_stop() -> None:
+    """Stop the streaming live view."""
+    global _stream_view
+    _stop_live()
+    _stream_view = None
 
 
 def print_welcome(model_name: str | None = None):

@@ -281,6 +281,8 @@ class Agent:
         on_thinking: Optional[Callable[[str], None]] = None,
         on_llm_chunk: Optional[Callable[[str], None]] = None,
         on_confirm_tool: Optional[Callable[[str, dict], bool]] = None,
+        on_llm_start: Optional[Callable[[], None]] = None,
+        on_token_count: Optional[Callable[[int, int], None]] = None,
     ):
         from config import get_config
         self.conversation_id: str = str(ULID())
@@ -294,9 +296,11 @@ class Agent:
         self.on_tool_use = on_tool_use or (lambda n, p: None)
         self.on_tool_result = on_tool_result or (lambda n, r: None)
         self.on_thinking = on_thinking or (lambda t: None)
-        self.on_llm_chunk = on_llm_chunk
+        self.on_llm_chunk = on_llm_chunk or (lambda c: None)
         # Returns True to allow, False to deny; defaults to always allow
         self.on_confirm_tool = on_confirm_tool or (lambda n, p: True)
+        self.on_llm_start = on_llm_start or (lambda: None)
+        self.on_token_count = on_token_count or (lambda i, o: None)
 
     def set_model(self, model_id: str, model_name: str):
         """Set active model and persist the choice."""
@@ -362,6 +366,46 @@ class Agent:
 
     def _extract_message(self, result: dict) -> str:
         return result.get("message", "")
+
+    def _stream_collect(self, prompt: str) -> tuple[str, dict]:
+        """
+        Stream one LLM turn, calling on_llm_start / on_llm_chunk / on_token_count.
+        Returns (full_message, token_info).
+        """
+        import logger
+        from api_client import chat_stream
+
+        is_first = not self._initialized
+        full_prompt = (
+            self._build_first_prompt(prompt) if is_first
+            else self._build_followup_prompt(prompt)
+        )
+
+        logger.log_api_request(full_prompt, self.conversation_id, self.selected_model, streaming=True)
+        self.on_llm_start()
+
+        full_message = ""
+        token_info: dict = {}
+
+        for chunk in chat_stream(
+            full_prompt,
+            conversation_id=self.conversation_id,
+            agent_id=self.selected_agent_id,
+            selected_model=self.selected_model,
+        ):
+            if "stop_reason" in chunk:
+                token_info = chunk.get("tokens", {})
+                if not self._initialized:
+                    self._initialized = True
+                break
+            msg = chunk.get("message", "")
+            if msg:
+                full_message += msg
+                self.on_llm_chunk(msg)
+
+        self.on_token_count(token_info.get("input", 0), token_info.get("output", 0))
+        logger.log_api_response({"message": full_message, "tokens": token_info})
+        return full_message, token_info
 
     # ------------------------------------------------------------------
     # Public interface
@@ -432,14 +476,13 @@ class Agent:
 
     def run(self, user_message: str) -> str:
         """
-        Agent loop with chain-of-thought and self-correction.
+        Agent loop with chain-of-thought and self-correction (streaming internally).
         Returns the final text response.
         """
         prompt = user_message
 
         for _ in range(self.MAX_TOOL_ITERATIONS):
-            result = self._call_api(prompt, streaming=False)
-            message = self._extract_message(result)
+            message, _tokens = self._stream_collect(prompt)
 
             tool_calls, text_part = self._process_response(message)
 
@@ -448,11 +491,7 @@ class Agent:
 
             result_parts, had_errors = self._execute_tools(tool_calls)
             tool_block = "\n\n".join(result_parts)
-
-            if had_errors:
-                suffix = _correction_note()
-            else:
-                suffix = _completion_note()
+            suffix = _correction_note() if had_errors else _completion_note()
 
             prompt = (
                 f"{text_part}\n\n{tool_block}{suffix}"

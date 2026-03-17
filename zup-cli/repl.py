@@ -626,49 +626,63 @@ def _process(message: str, agent: Agent):
     import logger
     logger.log_user_input(message)
 
-    # --- spinner-aware callback wrappers -----------------------------------
+    # --- streaming + spinner-aware callback wrappers -----------------------
     _orig_thinking    = agent.on_thinking
     _orig_tool_use    = agent.on_tool_use
     _orig_tool_result = agent.on_tool_result
     _orig_confirm     = agent.on_confirm_tool
 
+    def _on_llm_start():
+        display.stream_start()
+
+    def _on_llm_chunk(text: str):
+        display.stream_chunk(text)
+
+    def _on_token_count(in_t: int, out_t: int):
+        display.stream_tokens(in_t, out_t)
+
     def _on_thinking(text: str):
-        display.spinner_stop()
+        display.stream_stop()
         _orig_thinking(text)
-        display.spinner_start("Thinking…", status="thinking")
+        display.stream_start()
 
     def _on_tool_use(name: str, params: dict):
-        display.spinner_stop()
+        display.stream_stop()
         _orig_tool_use(name, params)
         display.spinner_start(f"Running {name}…", status=name)
 
     def _on_tool_result(name: str, result: str):
         display.spinner_stop()
         _orig_tool_result(name, result)
-        display.spinner_start("Thinking…", status="thinking")
 
     def _on_confirm(name: str, params: dict) -> bool:
         display.spinner_stop()
         return _orig_confirm(name, params)
 
-    agent.on_thinking    = _on_thinking
-    agent.on_tool_use    = _on_tool_use
-    agent.on_tool_result = _on_tool_result
+    _orig_llm_start   = agent.on_llm_start
+    _orig_llm_chunk   = agent.on_llm_chunk
+    _orig_token_count = agent.on_token_count
+
+    agent.on_llm_start    = _on_llm_start
+    agent.on_llm_chunk    = _on_llm_chunk
+    agent.on_token_count  = _on_token_count
+    agent.on_thinking     = _on_thinking
+    agent.on_tool_use     = _on_tool_use
+    agent.on_tool_result  = _on_tool_result
     agent.on_confirm_tool = _on_confirm
     # -----------------------------------------------------------------------
 
-    display.spinner_start("Thinking…", status="thinking")
     try:
         response = agent.run(message)
         logger.log_agent_response(response)
-        display.spinner_stop()
+        display.stream_stop()
         display.print_separator()
         display.print_response(response)
     except KeyboardInterrupt:
-        display.spinner_stop()
+        display.stream_stop()
         display.console.print("\n[yellow]Interrupted.[/yellow]")
     except Exception as e:
-        display.spinner_stop()
+        display.stream_stop()
         logger.log_error("_process", e)
         display.print_error(str(e))
         # Invalidate token if it looks like an auth error
@@ -678,6 +692,9 @@ def _process(message: str, agent: Agent):
             display.print_info("Token cleared — will re-authenticate on next request.")
     finally:
         # Restore original callbacks so /reset works correctly
+        agent.on_llm_start    = _orig_llm_start
+        agent.on_llm_chunk    = _orig_llm_chunk
+        agent.on_token_count  = _orig_token_count
         agent.on_thinking     = _orig_thinking
         agent.on_tool_use     = _orig_tool_use
         agent.on_tool_result  = _orig_tool_result
