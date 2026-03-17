@@ -1,0 +1,243 @@
+import json
+import time
+import httpx
+from typing import Generator, Optional
+from auth import get_token
+from config import get_config, DEFAULT_AGENT_ID
+
+CHAT_BASE = "https://genai-inference-app.stackspot.com"
+DATA_BASE = "https://data-integration-api.stackspot.com"
+KS_BASE = DATA_BASE
+
+
+def _headers(accept: str = "application/json") -> dict:
+    return {
+        "Authorization": f"Bearer {get_token()}",
+        "Content-Type": "application/json",
+        "Accept": accept,
+        "x-request-origin": "chat",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
+def chat_nonstream(
+    prompt: str,
+    conversation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    selected_model: Optional[str] = None,
+) -> dict:
+    cfg = get_config()
+    aid = agent_id or cfg.get("agent_id", DEFAULT_AGENT_ID)
+    url = f"{CHAT_BASE}/v1/agent/{aid}/chat"
+
+    payload: dict = {
+        "user_prompt": prompt,
+        "streaming": False,
+        "show_chat_processing_state": False,
+        "return_ks_in_response": False,
+        "deep_search_ks": False,
+        "stackspot_knowledge": False,
+        "use_conversation": conversation_id is not None,
+        "upload_ids": [],
+        "selected_model": selected_model,
+    }
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+
+    resp = httpx.post(url, json=payload, headers=_headers(), timeout=120.0)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def chat_stream(
+    prompt: str,
+    conversation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    selected_model: Optional[str] = None,
+) -> Generator[dict, None, None]:
+    cfg = get_config()
+    aid = agent_id or cfg.get("agent_id", DEFAULT_AGENT_ID)
+    url = f"{CHAT_BASE}/v1/agent/{aid}/chat"
+
+    payload: dict = {
+        "user_prompt": prompt,
+        "streaming": True,
+        "show_chat_processing_state": False,
+        "return_ks_in_response": False,
+        "deep_search_ks": False,
+        "stackspot_knowledge": False,
+        "use_conversation": conversation_id is not None,
+        "upload_ids": [],
+        "selected_model": selected_model,
+    }
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+
+    headers = _headers(accept="text/event-stream")
+
+    with httpx.stream("POST", url, json=payload, headers=headers, timeout=120.0) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            line = line.strip()
+            if line.startswith("data: "):
+                data_str = line[6:]
+                if data_str:
+                    try:
+                        yield json.loads(data_str)
+                    except json.JSONDecodeError:
+                        pass
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+def list_models() -> list:
+    resp = httpx.get(
+        f"{CHAT_BASE}/v1/llm/models",
+        headers=_headers(),
+        params={"active": "true", "page_size": "999"},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Sources
+# ---------------------------------------------------------------------------
+
+def list_knowledge_sources(page: int = 1, size: int = 10, visibility: str = "account") -> dict:
+    resp = httpx.get(
+        f"{KS_BASE}/v2/knowledge-sources",
+        headers=_headers(),
+        params={"page": page, "size": size, "visibility_list": visibility},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_ks_objects(slug: str, page: int = 1, size: int = 20) -> dict:
+    resp = httpx.get(
+        f"{KS_BASE}/v2/knowledge-sources/{slug}/objects",
+        headers=_headers(),
+        params={"page": page, "size": size, "content_limit": 5000},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_ks_details(slug: str) -> dict:
+    resp = httpx.get(
+        f"{DATA_BASE}/v1/knowledge-sources/{slug}",
+        headers=_headers(),
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def create_knowledge_source(
+    name: str, slug: str, description: str = "", visibility: str = "personal"
+) -> dict:
+    resp = httpx.post(
+        f"{DATA_BASE}/v1/knowledge-sources",
+        headers=_headers(),
+        json={
+            "name": name,
+            "slug": slug,
+            "description": description,
+            "default": False,
+            "visibility_level": visibility,
+            "creator": "",
+            "id": "",
+            "type": "custom",
+        },
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def upload_file_to_ks(local_path: str, ks_slug: str) -> dict:
+    """
+    3-step upload flow:
+      1. POST /v2/file-upload/form  → get presigned URL + upload_id
+      2. PUT <presigned_url>        → upload the file bytes
+      3. POST /v1/file-upload/{id}/split  → process/embed
+      Then poll /v1/file-upload/{id} until COMPLETED.
+    """
+    import os
+
+    file_name = os.path.basename(local_path)
+
+    # Step 1: request presigned form
+    form_resp = httpx.post(
+        f"{DATA_BASE}/v2/file-upload/form",
+        headers=_headers(),
+        json={
+            "file_name": file_name,
+            "target_id": ks_slug,
+            "target_type": "KNOWLEDGE_SOURCE",
+            "expiration": 3600,
+        },
+        timeout=30.0,
+    )
+    form_resp.raise_for_status()
+    form_data = form_resp.json()
+
+    upload_url: str = form_data.get("url") or form_data.get("upload_url", "")
+    upload_id: str = (
+        form_data.get("upload_id")
+        or form_data.get("id")
+        or form_data.get("file_upload_id", "")
+    )
+
+    if not upload_url:
+        raise RuntimeError(f"No upload URL in form response: {form_data}")
+    if not upload_id:
+        raise RuntimeError(f"No upload ID in form response: {form_data}")
+
+    # Step 2: upload the file
+    with open(local_path, "rb") as f:
+        content = f.read()
+
+    put_resp = httpx.put(upload_url, content=content, timeout=120.0)
+    put_resp.raise_for_status()
+
+    # Step 3: trigger split/embed
+    split_resp = httpx.post(
+        f"{DATA_BASE}/v1/file-upload/{upload_id}/split",
+        headers=_headers(),
+        json={
+            "split_overlap": 0,
+            "split_quantity": None,
+            "split_strategy": "SYNTACTIC",
+            "embed_after_split": True,
+        },
+        timeout=60.0,
+    )
+    split_resp.raise_for_status()
+
+    # Poll until done
+    for _ in range(30):
+        time.sleep(3)
+        poll = httpx.get(
+            f"{DATA_BASE}/v1/file-upload/{upload_id}",
+            headers=_headers(),
+            timeout=30.0,
+        )
+        poll.raise_for_status()
+        status = poll.json()
+        state = status.get("status", "").upper()
+        if state in ("COMPLETED", "EMBEDDED", "DONE"):
+            return status
+        if state == "FAILED":
+            raise RuntimeError(f"Upload processing failed: {status}")
+
+    return {"status": "PROCESSING", "upload_id": upload_id}
