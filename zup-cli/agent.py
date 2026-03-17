@@ -6,6 +6,7 @@ from the response, executes them, and loops until no more tool calls.
 import json
 import os
 import re
+import uuid
 from typing import Callable, Generator, Optional
 
 import tools as tool_module
@@ -29,13 +30,56 @@ TOOL_REGISTRY: dict[str, Callable] = {
 }
 
 # ---------------------------------------------------------------------------
-# Tool call parsing
+# Parsing helpers
 # ---------------------------------------------------------------------------
 
 TOOL_CALL_RE = re.compile(
     r"<tool_call>\s*<name>([\w_]+)</name>\s*<parameters>(.*?)</parameters>\s*</tool_call>",
     re.DOTALL,
 )
+THINKING_RE = re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL)
+
+# Errors that should trigger self-correction
+_ERROR_PREFIXES = ("Unknown tool", "Bad parameters", "Tool '", "Error", "error:")
+
+
+def parse_thinking(text: str) -> str:
+    """Extract content from <thinking>...</thinking> blocks."""
+    blocks = THINKING_RE.findall(text)
+    return "\n\n".join(b.strip() for b in blocks)
+
+
+def strip_thinking(text: str) -> str:
+    return THINKING_RE.sub("", text).strip()
+
+
+# Expected parameter signatures shown to the LLM on correction
+_TOOL_SIGNATURES: dict[str, str] = {
+    "read_file":                 'read_file(path="<string>")',
+    "write_file":                'write_file(path="<string>", content="<string>")',
+    "edit_file":                 'edit_file(path="<string>", old_str="<exact text to replace>", new_str="<replacement>")',
+    "list_files":                'list_files(path="<string optional>", pattern="<glob optional>")',
+    "search_files":              'search_files(pattern="<regex>", path="<optional>", file_glob="<optional>")',
+    "bash":                      'bash(command="<string>", timeout=<int optional>)',
+    "list_knowledge_sources":    'list_knowledge_sources(page=<int optional>, size=<int optional>)',
+    "get_ks_objects":            'get_ks_objects(slug="<string>", page=<int optional>, size=<int optional>)',
+    "get_ks_details":            'get_ks_details(slug="<string>")',
+    "create_knowledge_source":   'create_knowledge_source(name="<string>", slug="<string>", description="<optional>")',
+    "upload_to_knowledge_source":'upload_to_knowledge_source(file_path="<string>", ks_slug="<string>")',
+}
+
+_PARSE_ERROR_SENTINEL = "__PARSE_ERROR__"
+
+# Fallback: model sometimes emits XML-style params like <path>foo</path> instead of JSON
+_XML_PARAM_RE = re.compile(r"<([\w_]+)>(.*?)</\1>", re.DOTALL)
+
+
+def _try_parse_xml_params(text: str) -> dict | None:
+    """Try to parse XML-style parameters as a last resort, e.g. <path>foo</path>."""
+    matches = _XML_PARAM_RE.findall(text)
+    if not matches:
+        return None
+    return {k: v.strip() for k, v in matches}
 
 
 def parse_tool_calls(text: str) -> list[dict]:
@@ -43,11 +87,18 @@ def parse_tool_calls(text: str) -> list[dict]:
     for m in TOOL_CALL_RE.finditer(text):
         name = m.group(1).strip()
         params_str = m.group(2).strip()
+        parse_error = None
         try:
             params = json.loads(params_str)
-        except json.JSONDecodeError:
-            params = {}
-        calls.append({"name": name, "parameters": params})
+        except json.JSONDecodeError as e:
+            # Attempt XML-style fallback before reporting an error
+            xml_params = _try_parse_xml_params(params_str)
+            if xml_params is not None:
+                params = xml_params
+            else:
+                params = {}
+                parse_error = f"{e} — raw content was: {params_str!r}"
+        calls.append({"name": name, "parameters": params, "_parse_error": parse_error})
     return calls
 
 
@@ -55,16 +106,66 @@ def strip_tool_calls(text: str) -> str:
     return TOOL_CALL_RE.sub("", text).strip()
 
 
-def execute_tool(name: str, parameters: dict) -> str:
+def _is_error(result: str) -> bool:
+    return any(result.startswith(p) for p in _ERROR_PREFIXES)
+
+
+def execute_tool(name: str, parameters: dict, parse_error: str | None = None) -> str:
+    # JSON was malformed — tell the LLM exactly what it sent and the correct format
+    if parse_error:
+        sig = _TOOL_SIGNATURES.get(name, name)
+        return (
+            f"PARAMETER PARSE ERROR for tool '{name}': {parse_error}\n"
+            f"The parameters block must be valid JSON. Correct signature:\n"
+            f"  {sig}\n"
+            f"Please retry with properly formatted JSON parameters."
+        )
+
     fn = TOOL_REGISTRY.get(name)
     if fn is None:
-        return f"Unknown tool: '{name}'. Available: {', '.join(TOOL_REGISTRY)}"
+        available = "\n".join(f"  {s}" for s in _TOOL_SIGNATURES.values())
+        return (
+            f"Unknown tool: '{name}'.\n"
+            f"Available tools with signatures:\n{available}\n"
+            f"Please retry using one of the exact tool names above."
+        )
     try:
         return fn(**parameters)
     except TypeError as e:
-        return f"Bad parameters for tool '{name}': {e}"
+        sig = _TOOL_SIGNATURES.get(name, name)
+        return (
+            f"Wrong parameters for tool '{name}': {e}\n"
+            f"You passed: {json.dumps(parameters)}\n"
+            f"Correct signature: {sig}\n"
+            f"Please retry with the correct parameter names."
+        )
     except Exception as e:
-        return f"Tool '{name}' error: {e}"
+        return f"Tool '{name}' error: {e}\nPlease retry or use a different approach."
+
+
+def _correction_note() -> str:
+    """Appended when any tool result contains an error — prompts self-correction."""
+    return (
+        "\n<system_note>\n"
+        "One or more tool calls above returned errors. Instructions:\n"
+        "1. Read each <tool_result> error message carefully.\n"
+        "2. Fix the tool name or parameters exactly as shown in the error.\n"
+        "3. For edit_file errors: first call read_file to get the exact text, "
+        "then use that exact text as old_str.\n"
+        "4. Retry only the failed calls — do not repeat successful ones.\n"
+        "</system_note>"
+    )
+
+
+def _completion_note() -> str:
+    """Appended when all tool calls succeeded — tells the model to stop and summarise."""
+    return (
+        "\n<system_note>\n"
+        "All tool calls completed successfully. "
+        "Provide your final response to the user now. "
+        "Do NOT call any more tools unless the user explicitly asks for additional work.\n"
+        "</system_note>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,17 +176,35 @@ _SYSTEM_PROMPT_TEMPLATE = """\
 You are Zup CLI, an AI coding assistant. You help users with software engineering \
 tasks by reading and writing files, executing shell commands, and managing knowledge sources.
 
+## Reasoning
+
+Before acting on any non-trivial request, reason through it inside <thinking>...</thinking> tags.
+Use this as your private scratchpad: break down the problem, plan which tools to use and in what
+order, and check your logic before committing to an approach.
+
+Example:
+<thinking>
+The user wants to add a new function. I should first read the file to understand the structure,
+then edit the right location. Let me list files first to find the correct path.
+</thinking>
+
 ## Tool Protocol
 
 To use a tool output EXACTLY this format (no extra whitespace inside tags):
 
 <tool_call><name>TOOL_NAME</name><parameters>{{"param": "value"}}</parameters></tool_call>
 
+CRITICAL: The <parameters> block MUST contain valid JSON — never XML, never plain text.
+Correct:   <parameters>{{"path": "src/main.py"}}</parameters>
+WRONG:     <parameters><path>src/main.py</path></parameters>
+WRONG:     <parameters>src/main.py</parameters>
+
 Rules:
 - You may chain multiple tool calls in one response.
 - Always read a file before editing it.
 - After receiving <tool_result> blocks, continue working or give your final answer.
 - Do NOT repeat tool calls that already have results.
+- If a tool result contains an error, read the error carefully, correct your approach, and retry.
 
 ## Available Tools
 
@@ -148,14 +267,19 @@ _TOOL_REMINDER = (
 class Agent:
     MAX_TOOL_ITERATIONS = 15
 
+    # Tools that mutate the filesystem or run shell commands — require user confirmation
+    CONFIRM_TOOLS = {"write_file", "edit_file", "bash"}
+
     def __init__(
         self,
         on_tool_use: Optional[Callable[[str, dict], None]] = None,
         on_tool_result: Optional[Callable[[str, str], None]] = None,
+        on_thinking: Optional[Callable[[str], None]] = None,
         on_llm_chunk: Optional[Callable[[str], None]] = None,
+        on_confirm_tool: Optional[Callable[[str, dict], bool]] = None,
     ):
         from config import get_config
-        self.conversation_id: Optional[str] = None
+        self.conversation_id: str = str(uuid.uuid4())
         self._initialized = False
         # Restore last-used model from config (persisted across sessions)
         cfg = get_config()
@@ -163,7 +287,10 @@ class Agent:
         self.selected_model_name: Optional[str] = cfg.get("selected_model_name")
         self.on_tool_use = on_tool_use or (lambda n, p: None)
         self.on_tool_result = on_tool_result or (lambda n, r: None)
+        self.on_thinking = on_thinking or (lambda t: None)
         self.on_llm_chunk = on_llm_chunk
+        # Returns True to allow, False to deny; defaults to always allow
+        self.on_confirm_tool = on_confirm_tool or (lambda n, p: True)
 
     def set_model(self, model_id: str, model_name: str):
         """Set active model and persist the choice."""
@@ -176,9 +303,9 @@ class Agent:
         save_config(cfg)
 
     def reset(self):
-        self.conversation_id = None
+        self.conversation_id = str(uuid.uuid4())
         self._initialized = False
-        # selected_model / selected_model_name intentionally preserved across /clear
+        # selected_model / selected_model_name intentionally preserved across /reset
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -212,7 +339,6 @@ class Agent:
                 selected_model=self.selected_model,
             )
             if not self._initialized:
-                self.conversation_id = result.get("conversation_id")
                 self._initialized = True
             return result
 
@@ -223,81 +349,123 @@ class Agent:
     # Public interface
     # ------------------------------------------------------------------
 
+    def _process_response(self, message: str) -> tuple[list[dict], str]:
+        """
+        Parse a raw LLM message:
+        - Emit thinking via callback
+        - Return (tool_calls, clean_text_without_thinking_or_tool_tags)
+        """
+        import logger
+        thinking = parse_thinking(message)
+        if thinking:
+            self.on_thinking(thinking)
+            logger.log_thinking(thinking)
+
+        clean = strip_thinking(message)
+        tool_calls = parse_tool_calls(clean)
+        text_part = strip_tool_calls(clean)
+        return tool_calls, text_part
+
+    def _execute_tools(self, tool_calls: list[dict]) -> tuple[list[str], bool]:
+        """
+        Execute tool calls, emit callbacks.
+        Returns (result_blocks, had_errors).
+        """
+        import logger
+        parts = []
+        had_errors = False
+        for tc in tool_calls:
+            self.on_tool_use(tc["name"], tc["parameters"])
+            logger.log_tool_call(tc["name"], tc["parameters"])
+            # For mutating tools, ask the user to confirm before executing
+            if tc["name"] in self.CONFIRM_TOOLS and not tc.get("_parse_error"):
+                allowed = self.on_confirm_tool(tc["name"], tc["parameters"])
+                logger.log_tool_confirm(tc["name"], allowed)
+                if not allowed:
+                    result_text = (
+                        f"User declined the '{tc['name']}' action. "
+                        "Do not retry this operation unless the user explicitly asks."
+                    )
+                    self.on_tool_result(tc["name"], result_text)
+                    logger.log_tool_result(tc["name"], result_text)
+                    parts.append(
+                        f"<tool_result>\n"
+                        f"<name>{tc['name']}</name>\n"
+                        f"<content>{result_text}</content>\n"
+                        f"</tool_result>"
+                    )
+                    continue
+            result_text = execute_tool(
+                tc["name"],
+                tc["parameters"],
+                parse_error=tc.get("_parse_error"),
+            )
+            self.on_tool_result(tc["name"], result_text)
+            logger.log_tool_result(tc["name"], result_text)
+            parts.append(
+                f"<tool_result>\n"
+                f"<name>{tc['name']}</name>\n"
+                f"<content>{result_text}</content>\n"
+                f"</tool_result>"
+            )
+            if _is_error(result_text):
+                had_errors = True
+        return parts, had_errors
+
     def run(self, user_message: str) -> str:
         """
-        Non-streaming agent loop. Returns the final text response.
-        Tool-use notifications are emitted via callbacks.
+        Agent loop with chain-of-thought and self-correction.
+        Returns the final text response.
         """
         prompt = user_message
 
-        for iteration in range(self.MAX_TOOL_ITERATIONS):
+        for _ in range(self.MAX_TOOL_ITERATIONS):
             result = self._call_api(prompt, streaming=False)
             message = self._extract_message(result)
 
-            tool_calls = parse_tool_calls(message)
+            tool_calls, text_part = self._process_response(message)
 
             if not tool_calls:
-                # No tool calls — this is the final answer
-                return message
+                return strip_thinking(message)
 
-            # Execute all tool calls in this response
-            tool_results_parts = []
-            for tc in tool_calls:
-                self.on_tool_use(tc["name"], tc["parameters"])
-                result_text = execute_tool(tc["name"], tc["parameters"])
-                self.on_tool_result(tc["name"], result_text)
-                tool_results_parts.append(
-                    f"<tool_result>\n"
-                    f"<name>{tc['name']}</name>\n"
-                    f"<content>{result_text}</content>\n"
-                    f"</tool_result>"
-                )
+            result_parts, had_errors = self._execute_tools(tool_calls)
+            tool_block = "\n\n".join(result_parts)
 
-            # Build next prompt: any text the LLM wrote + tool results
-            text_part = strip_tool_calls(message)
-            tool_block = "\n\n".join(tool_results_parts)
-            prompt = (f"{text_part}\n\n{tool_block}" if text_part else tool_block)
+            if had_errors:
+                suffix = _correction_note()
+            else:
+                suffix = _completion_note()
+
+            prompt = (
+                f"{text_part}\n\n{tool_block}{suffix}"
+                if text_part
+                else f"{tool_block}{suffix}"
+            )
 
         return "Reached maximum tool iterations without a final response."
 
     def stream(self, user_message: str) -> Generator[str, None, None]:
-        """
-        Streaming agent loop.
-        - Tool-calling turns: non-streaming (accumulate full response, execute tools).
-        - Final turn (no tool calls): streaming (yield chunks to caller).
-        """
+        """Streaming-compatible agent loop (tool turns are non-streaming)."""
         prompt = user_message
 
-        for iteration in range(self.MAX_TOOL_ITERATIONS):
-            # Non-streaming: check for tool calls first
+        for _ in range(self.MAX_TOOL_ITERATIONS):
             result = self._call_api(prompt, streaming=False)
             message = self._extract_message(result)
 
-            tool_calls = parse_tool_calls(message)
+            tool_calls, text_part = self._process_response(message)
 
             if not tool_calls:
-                # Final answer — now re-request with streaming for live output.
-                # We use the already-received message and stream it simulated,
-                # OR we re-send the prompt with streaming=True.
-                # To avoid a double API call, just yield the text we have.
-                yield message
+                yield strip_thinking(message)
                 return
 
-            # Execute tools
-            tool_results_parts = []
-            for tc in tool_calls:
-                self.on_tool_use(tc["name"], tc["parameters"])
-                result_text = execute_tool(tc["name"], tc["parameters"])
-                self.on_tool_result(tc["name"], result_text)
-                tool_results_parts.append(
-                    f"<tool_result>\n"
-                    f"<name>{tc['name']}</name>\n"
-                    f"<content>{result_text}</content>\n"
-                    f"</tool_result>"
-                )
+            result_parts, had_errors = self._execute_tools(tool_calls)
+            tool_block = "\n\n".join(result_parts)
+            suffix = _correction_note() if had_errors else _completion_note()
 
-            text_part = strip_tool_calls(message)
-            tool_block = "\n\n".join(tool_results_parts)
-            prompt = (f"{text_part}\n\n{tool_block}" if text_part else tool_block)
+            prompt = (
+                f"{text_part}\n\n{tool_block}{suffix}"
+                if text_part
+                else f"{tool_block}{suffix}"
+            )
 
         yield "Reached maximum tool iterations without a final response."

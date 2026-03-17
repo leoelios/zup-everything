@@ -40,16 +40,20 @@ def chat_nonstream(
         "return_ks_in_response": False,
         "deep_search_ks": False,
         "stackspot_knowledge": False,
-        "use_conversation": conversation_id is not None,
+        "use_conversation": True,
+        "conversation_id": conversation_id,
         "upload_ids": [],
         "selected_model": selected_model,
     }
-    if conversation_id:
-        payload["conversation_id"] = conversation_id
+
+    import logger
+    logger.log_api_request(prompt, conversation_id, selected_model, streaming=False)
 
     resp = httpx.post(url, json=payload, headers=_headers(), timeout=120.0)
     resp.raise_for_status()
-    return resp.json()
+    result = resp.json()
+    logger.log_api_response(result)
+    return result
 
 
 def chat_stream(
@@ -69,12 +73,11 @@ def chat_stream(
         "return_ks_in_response": False,
         "deep_search_ks": False,
         "stackspot_knowledge": False,
-        "use_conversation": conversation_id is not None,
+        "use_conversation": True,
+        "conversation_id": conversation_id,
         "upload_ids": [],
         "selected_model": selected_model,
     }
-    if conversation_id:
-        payload["conversation_id"] = conversation_id
 
     headers = _headers(accept="text/event-stream")
 

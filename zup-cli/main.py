@@ -27,8 +27,19 @@ def main():
         action="store_true",
         help="Configure credentials interactively",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging — appends full I/O trace to logs.txt",
+    )
 
     args = parser.parse_args()
+
+    if args.debug:
+        import logger
+        logger.setup("logs.txt")
+        import atexit
+        atexit.register(logger.close)
 
     if args.config:
         from config import configure

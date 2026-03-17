@@ -19,7 +19,8 @@ from agent import Agent
 # Each entry: (full_text_to_complete, display_label, description)
 _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/help",             "/help",                    "Show available commands"),
-    ("/clear",            "/clear",                   "Start a new conversation"),
+    ("/reset",            "/reset",                   "Start a new conversation (new ID)"),
+    ("/debug",            "/debug",                   "Show debug log path"),
     ("/cwd",              "/cwd [path]",               "Show or change working directory"),
     ("/model",            "/model",                   "Switch model interactively"),
     ("/models",           "/models",                  "List all available AI models"),
@@ -181,6 +182,115 @@ def _pick_model(current_id: Optional[str]) -> Optional[tuple[str, str]]:
     return state["result"]
 
 
+def _confirm_tool(name: str, parameters: dict) -> bool:
+    """
+    Show an interactive Accept / Decline prompt before executing a mutating tool.
+    Returns True to allow, False to deny.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style as PTStyle
+
+    # Build a human-readable description of what the tool will do
+    preview_lines: list[str] = []
+    if name == "write_file":
+        path = parameters.get("path", "?")
+        content = parameters.get("content", "")
+        lines = content.splitlines()
+        shown = lines[:20]
+        preview_lines = [f"  Write file: {path}", ""]
+        preview_lines += [f"    {ln}" for ln in shown]
+        if len(lines) > 20:
+            preview_lines.append(f"    ... ({len(lines) - 20} more lines)")
+    elif name == "edit_file":
+        path = parameters.get("path", "?")
+        old_str = parameters.get("old_str", "")
+        new_str = parameters.get("new_str", "")
+        preview_lines = [
+            f"  Edit file: {path}", "",
+            "  Replace:",
+        ] + [f"  - {ln}" for ln in old_str.splitlines()] + [
+            "",
+            "  With:",
+        ] + [f"  + {ln}" for ln in new_str.splitlines()]
+    elif name == "bash":
+        cmd = parameters.get("command", "?")
+        preview_lines = [f"  Run command:", f"    {cmd}"]
+    else:
+        preview_lines = [f"  {name}: {parameters}"]
+
+    OPTIONS = ["Accept", "Decline"]
+    state = {"index": 0, "result": None}
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _up(event):
+        state["index"] = (state["index"] - 1) % len(OPTIONS)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _down(event):
+        state["index"] = (state["index"] + 1) % len(OPTIONS)
+
+    @kb.add("enter")
+    def _select(event):
+        state["result"] = OPTIONS[state["index"]]
+        event.app.exit()
+
+    @kb.add("a")
+    @kb.add("y")
+    def _accept(event):
+        state["result"] = "Accept"
+        event.app.exit()
+
+    @kb.add("d")
+    @kb.add("n")
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _decline(event):
+        state["result"] = "Decline"
+        event.app.exit()
+
+    def _get_text():
+        lines = [("class:title", f"\n  Confirm action: {name}\n\n")]
+        for ln in preview_lines:
+            lines.append(("class:preview", ln + "\n"))
+        lines.append(("", "\n  ↑/↓ or a/d · Enter to confirm\n\n"))
+        for i, opt in enumerate(OPTIONS):
+            selected = i == state["index"]
+            marker = "  ● " if selected else "  ○ "
+            style = "class:selected" if selected else "class:option"
+            lines.append((style, f"{marker}{opt}\n"))
+        return lines
+
+    style = PTStyle.from_dict({
+        "title":    "bold yellow",
+        "preview":  "cyan",
+        "selected": "bold white reverse",
+        "option":   "",
+    })
+
+    layout = Layout(
+        HSplit([Window(content=FormattedTextControl(_get_text, focusable=True))])
+    )
+
+    app: Application = Application(
+        layout=layout,
+        key_bindings=kb,
+        style=style,
+        full_screen=False,
+        mouse_support=False,
+    )
+    app.run()
+
+    return state["result"] == "Accept"
+
+
 def _print_models(data):
     """Render the models list: bold display name + dim ID."""
     from rich.console import Console
@@ -236,7 +346,8 @@ def _print_models(data):
 HELP_TEXT = """
 [bold cyan]Commands[/bold cyan]
   /help                         Show this help
-  /clear                        Start a new conversation
+  /reset                        Start a new conversation (generates a new ID)
+  /debug                        Show debug log path (start with --debug to enable)
   /cwd [path]                   Show or change working directory
   /models                       List available AI models
   /ks list [page] [size]        List knowledge sources
@@ -266,9 +377,17 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
         Console().print(HELP_TEXT)
         return True
 
-    if head == "/clear":
+    if head in ("/reset", "/clear"):
         agent.reset()
-        display.print_info("Conversation cleared.")
+        display.print_info(f"Conversation reset. New ID: {agent.conversation_id}")
+        return True
+
+    if head == "/debug":
+        import logger
+        if logger.is_enabled():
+            display.print_info(f"Debug logging active → {logger._log_path.resolve()}")
+        else:
+            display.print_info("Debug mode is OFF. Restart with --debug to enable.")
         return True
 
     if head == "/cwd":
@@ -366,20 +485,65 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
 
 def _process(message: str, agent: Agent):
     """Run the agent for one user message and display the result."""
+    import logger
+    logger.log_user_input(message)
+
+    # --- spinner-aware callback wrappers -----------------------------------
+    _orig_thinking    = agent.on_thinking
+    _orig_tool_use    = agent.on_tool_use
+    _orig_tool_result = agent.on_tool_result
+    _orig_confirm     = agent.on_confirm_tool
+
+    def _on_thinking(text: str):
+        display.spinner_stop()
+        _orig_thinking(text)
+        display.spinner_start("Thinking…")
+
+    def _on_tool_use(name: str, params: dict):
+        display.spinner_stop()
+        _orig_tool_use(name, params)
+        display.spinner_start(f"Running {name}…")
+
+    def _on_tool_result(name: str, result: str):
+        display.spinner_stop()
+        _orig_tool_result(name, result)
+        display.spinner_start("Thinking…")
+
+    def _on_confirm(name: str, params: dict) -> bool:
+        display.spinner_stop()
+        return _orig_confirm(name, params)
+
+    agent.on_thinking    = _on_thinking
+    agent.on_tool_use    = _on_tool_use
+    agent.on_tool_result = _on_tool_result
+    agent.on_confirm_tool = _on_confirm
+    # -----------------------------------------------------------------------
+
+    display.spinner_start("Thinking…")
     try:
-        # Tool-use notifications are printed live via callbacks.
-        # The final text response is rendered after.
         response = agent.run(message)
+        logger.log_agent_response(response)
+        display.spinner_stop()
+        display.print_separator()
         display.print_response(response)
     except KeyboardInterrupt:
+        display.spinner_stop()
         display.console.print("\n[yellow]Interrupted.[/yellow]")
     except Exception as e:
+        display.spinner_stop()
+        logger.log_error("_process", e)
         display.print_error(str(e))
         # Invalidate token if it looks like an auth error
         if "401" in str(e) or "403" in str(e) or "auth" in str(e).lower():
             from auth import invalidate_token
             invalidate_token()
             display.print_info("Token cleared — will re-authenticate on next request.")
+    finally:
+        # Restore original callbacks so /reset works correctly
+        agent.on_thinking     = _orig_thinking
+        agent.on_tool_use     = _orig_tool_use
+        agent.on_tool_result  = _orig_tool_result
+        agent.on_confirm_tool = _orig_confirm
 
 
 def start_repl(initial_prompt: Optional[str] = None):
@@ -399,10 +563,16 @@ def start_repl(initial_prompt: Optional[str] = None):
     agent = Agent(
         on_tool_use=display.print_tool_use,
         on_tool_result=display.print_tool_result,
+        on_thinking=display.print_thinking,
+        on_confirm_tool=_confirm_tool,
     )
 
     display.print_welcome(model_name=agent.selected_model_name)
-    display.print_info("Authenticated ✓\n")
+    display.print_info(f"Authenticated ✓  |  conversation: {agent.conversation_id}\n")
+
+    import logger
+    if logger.is_enabled():
+        display.print_info(f"Debug mode ON — logging to {logger._log_path.resolve()}\n")
 
     # Non-interactive mode (pipe / single prompt)
     if initial_prompt:
