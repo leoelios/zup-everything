@@ -189,6 +189,14 @@ MODIFIERS: dict[str, callable] = {
     "multi": run_multi,
 }
 
+# ---------------------------------------------------------------------------
+# Passthrough modifiers — handled in repl._process, not via MODIFIERS dispatch
+# ---------------------------------------------------------------------------
+# @insecure  — auto-accepts all tool confirmations (write_file, edit_file, bash)
+#              without prompting the user. Use with caution.
+
+PASSTHROUGH_MODIFIERS: set[str] = {"insecure"}
+
 
 def apply_modifiers(modifiers: list[str], prompt: str, agent) -> Optional[str]:
     """

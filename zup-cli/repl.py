@@ -5,14 +5,17 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import re
+
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.lexers import Lexer
 
 import display
 from agent import Agent
 
 
 # ---------------------------------------------------------------------------
-# Slash-command autocomplete
+# Slash-command and modifier autocomplete
 # ---------------------------------------------------------------------------
 
 # All completable slash tokens, in display order.
@@ -32,26 +35,67 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/exit",             "/exit",                    "Quit"),
 ]
 
+# Modifier completions — kept in sync with modifiers.py
+_MODIFIER_COMPLETIONS: list[tuple[str, str, str]] = [
+    ("@multi",    "@multi <prompt>",    "Split task into parallel subtasks and merge results"),
+    ("@insecure", "@insecure <prompt>", "Auto-accept all actions without confirmation"),
+]
 
-class SlashCompleter(Completer):
-    """Complete slash commands as the user types."""
+# Regex to find an @-token being typed immediately before the cursor
+_AT_TOKEN_RE = re.compile(r"@(\w*)$")
+
+# Regex to split a line into @-modifier tokens vs plain text (for the lexer)
+_MODIFIER_SPLIT_RE = re.compile(r"(@\w+)")
+
+
+class ZupCompleter(Completer):
+    """Complete slash commands (line-start) and @modifiers (anywhere in line)."""
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
 
-        # Only activate when the line starts with /
-        if not text.startswith("/"):
+        # ── Slash commands (line must start with /) ───────────────────────
+        if text.startswith("/"):
+            for token, label, desc in _SLASH_COMPLETIONS:
+                if token.startswith(text):
+                    yield Completion(
+                        token[len(text):],
+                        start_position=0,
+                        display=label,
+                        display_meta=desc,
+                    )
             return
 
-        for token, label, desc in _SLASH_COMPLETIONS:
-            if token.startswith(text):
-                # Yield only the remaining suffix
-                yield Completion(
-                    token[len(text):],
-                    start_position=0,
-                    display=label,
-                    display_meta=desc,
-                )
+        # ── @modifier anywhere in the line ────────────────────────────────
+        m = _AT_TOKEN_RE.search(text)
+        if m:
+            typed = m.group(0)          # e.g. "@ins"
+            start  = -len(typed)        # replace from the @ character
+            for token, label, desc in _MODIFIER_COMPLETIONS:
+                if token.startswith(typed):
+                    yield Completion(
+                        token[len(typed):],
+                        start_position=start,
+                        display=label,
+                        display_meta=desc,
+                    )
+
+
+class ZupLexer(Lexer):
+    """Colour @modifier tokens in the prompt input differently from plain text."""
+
+    def lex_document(self, document):
+        def get_line(line_no: int):
+            line = document.lines[line_no]
+            tokens = []
+            for part in _MODIFIER_SPLIT_RE.split(line):
+                if _MODIFIER_SPLIT_RE.fullmatch(part):
+                    tokens.append(("class:modifier", part))
+                else:
+                    tokens.append(("", part))
+            return tokens
+
+        return get_line
 
 HISTORY_FILE = Path.home() / ".zup-cli" / "history"
 
@@ -496,6 +540,10 @@ HELP_TEXT = """
   /ks upload <file> <slug>      Upload a local file to a knowledge source
   /exit                         Quit
 
+[bold cyan]Modifiers[/bold cyan]
+  @multi <prompt>               Split task into parallel subtasks and merge results
+  @insecure <prompt>            Auto-accept all tool actions without confirmation
+
 [bold cyan]Usage[/bold cyan]
   Type any message and press Enter. The AI reads/writes files,
   runs shell commands, and manages knowledge sources as needed.
@@ -624,19 +672,29 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
 def _process(message: str, agent: Agent):
     """Run the agent for one user message and display the result."""
     import logger
-    from modifiers import extract_modifiers, apply_modifiers
+    from modifiers import extract_modifiers, apply_modifiers, PASSTHROUGH_MODIFIERS
     logger.log_user_input(message)
 
     # ── Modifier detection ───────────────────────────────────────────────────
     modifiers, clean_message = extract_modifiers(message)
+
+    # @insecure — passthrough modifier: skip all tool confirmations
+    insecure_mode = "insecure" in modifiers
+    if insecure_mode:
+        display.print_info("[@insecure] Auto-accepting all actions — no confirmations will be shown.")
+        message = clean_message or message
+
     if modifiers and clean_message:
-        result = apply_modifiers(modifiers, clean_message, agent)
-        if result is not None:
-            logger.log_agent_response(result)
-            display.print_separator()
-            display.print_response(result)
-            return
-        # Unknown modifier — fall through to normal processing with clean prompt
+        # Filter out passthrough modifiers before dispatching
+        dispatch_modifiers = [m for m in modifiers if m not in PASSTHROUGH_MODIFIERS]
+        if dispatch_modifiers:
+            result = apply_modifiers(dispatch_modifiers, clean_message, agent)
+            if result is not None:
+                logger.log_agent_response(result)
+                display.print_separator()
+                display.print_response(result)
+                return
+        # Unknown or passthrough-only modifier — fall through with clean prompt
         message = clean_message
     # ────────────────────────────────────────────────────────────────────────
 
@@ -671,6 +729,9 @@ def _process(message: str, agent: Agent):
 
     def _on_confirm(name: str, params: dict) -> bool:
         display.spinner_stop()
+        if insecure_mode:
+            display.print_info(f"[@insecure] Auto-accepted: {name}")
+            return True
         return _orig_confirm(name, params)
 
     _orig_llm_start   = agent.on_llm_start
@@ -752,8 +813,12 @@ def start_repl(initial_prompt: Optional[str] = None):
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     session = PromptSession(
         history=FileHistory(str(HISTORY_FILE)),
-        style=Style.from_dict({"prompt": "bold cyan"}),
-        completer=SlashCompleter(),
+        style=Style.from_dict({
+            "prompt":   "bold cyan",
+            "modifier": "bold yellow",
+        }),
+        completer=ZupCompleter(),
+        lexer=ZupLexer(),
         complete_while_typing=True,
     )
 
