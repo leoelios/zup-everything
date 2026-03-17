@@ -497,17 +497,17 @@ def _process(message: str, agent: Agent):
     def _on_thinking(text: str):
         display.spinner_stop()
         _orig_thinking(text)
-        display.spinner_start("Thinking…")
+        display.spinner_start("Thinking…", status="thinking")
 
     def _on_tool_use(name: str, params: dict):
         display.spinner_stop()
         _orig_tool_use(name, params)
-        display.spinner_start(f"Running {name}…")
+        display.spinner_start(f"Running {name}…", status=name)
 
     def _on_tool_result(name: str, result: str):
         display.spinner_stop()
         _orig_tool_result(name, result)
-        display.spinner_start("Thinking…")
+        display.spinner_start("Thinking…", status="thinking")
 
     def _on_confirm(name: str, params: dict) -> bool:
         display.spinner_stop()
@@ -519,7 +519,7 @@ def _process(message: str, agent: Agent):
     agent.on_confirm_tool = _on_confirm
     # -----------------------------------------------------------------------
 
-    display.spinner_start("Thinking…")
+    display.spinner_start("Thinking…", status="thinking")
     try:
         response = agent.run(message)
         logger.log_agent_response(response)

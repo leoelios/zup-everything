@@ -6,8 +6,9 @@ from the response, executes them, and loops until no more tool calls.
 import json
 import os
 import re
-import uuid
 from typing import Callable, Generator, Optional
+
+from ulid import ULID
 
 import tools as tool_module
 
@@ -279,7 +280,7 @@ class Agent:
         on_confirm_tool: Optional[Callable[[str, dict], bool]] = None,
     ):
         from config import get_config
-        self.conversation_id: str = str(uuid.uuid4())
+        self.conversation_id: str = str(ULID())
         self._initialized = False
         # Restore last-used model from config (persisted across sessions)
         cfg = get_config()
@@ -303,7 +304,7 @@ class Agent:
         save_config(cfg)
 
     def reset(self):
-        self.conversation_id = str(uuid.uuid4())
+        self.conversation_id = str(ULID())
         self._initialized = False
         # selected_model / selected_model_name intentionally preserved across /reset
 

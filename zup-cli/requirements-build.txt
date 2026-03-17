@@ -1,0 +1,5 @@
+# Build dependencies for creating portable executables
+pyinstaller>=6.0.0
+
+# Runtime dependencies (also needed for build)
+-r requirements.txt

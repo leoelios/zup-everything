@@ -1,12 +1,12 @@
 """Terminal output helpers — mimics Claude Code's visual style."""
 
 import json
-from rich.console import Console
+import time
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.spinner import Spinner as RichSpinner
 from rich.text import Text
 from rich import box
 
@@ -19,6 +19,39 @@ console = Console()
 _live: Live | None = None
 
 
+def _fmt_elapsed(seconds: float) -> str:
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    return f"{m}m {s}s"
+
+
+class _StatusSpinner:
+    """Renders:  ✻ label (elapsed · status)"""
+
+    _FRAMES = ["✻", "✼", "✽", "✾", "✽", "✼"]
+
+    def __init__(self, label: str, status: str) -> None:
+        self._label = label
+        self._status = status
+        self._start = time.monotonic()
+        self._tick = 0
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        frame = self._FRAMES[self._tick % len(self._FRAMES)]
+        self._tick += 1
+        elapsed = _fmt_elapsed(time.monotonic() - self._start)
+        t = Text()
+        t.append(f"{frame} ", style="bold yellow")
+        t.append(self._label, style="bold white")
+        t.append(f" ({elapsed}", style="dim")
+        if self._status:
+            t.append(f" · {self._status}", style="dim")
+        t.append(")", style="dim")
+        yield t
+
+
 def _stop_live() -> None:
     global _live
     if _live is not None:
@@ -26,13 +59,13 @@ def _stop_live() -> None:
         _live = None
 
 
-def spinner_start(text: str = "Thinking…") -> None:
+def spinner_start(label: str = "Thinking…", status: str = "thinking") -> None:
     global _live
     _stop_live()
     _live = Live(
-        RichSpinner("dots", text=f" [dim]{text}[/dim]"),
+        _StatusSpinner(label, status),
         console=console,
-        refresh_per_second=15,
+        refresh_per_second=8,
         transient=True,
     )
     _live.start()
