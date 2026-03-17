@@ -187,16 +187,6 @@ def print_welcome(model_name: str | None = None):
         for line in icon_lines:
             left.append(line + "\n", style="bold cyan")
     left.append("\n")
-    left.append(f"Welcome back {username}!\n", style="bold white")
-    left.append("\n")
-    meta_parts = []
-    if model_name:
-        meta_parts.append(model_name)
-    if realm:
-        meta_parts.append(realm)
-    if meta_parts:
-        left.append(" · ".join(meta_parts) + "\n", style="dim")
-    left.append(cwd + "\n", style="dim")
 
     # ── Right column ─────────────────────────────────────────────────────────
     right = Text()
@@ -217,8 +207,15 @@ def print_welcome(model_name: str | None = None):
     right.append("/ks", style="bold dim")
     right.append(" to manage knowledge sources\n", style="dim")
     right.append("\u2500" * 44 + "\n", style="dim")
-    right.append("Recent activity\n", style="bold cyan")
-    right.append("  No recent activity\n", style="dim")
+    right.append(f"\nWelcome back {username}!\n", style="bold white")
+    meta_parts = []
+    if model_name:
+        meta_parts.append(model_name)
+    if realm:
+        meta_parts.append(realm)
+    if meta_parts:
+        right.append(" · ".join(meta_parts) + "\n", style="dim")
+    right.append(cwd + "\n", style="dim")
 
     # ── Two-column grid ───────────────────────────────────────────────────────
     grid = Table.grid(padding=(0, 2))
