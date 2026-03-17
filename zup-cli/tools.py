@@ -254,3 +254,81 @@ def upload_to_ks_tool(file_path: str, ks_slug: str) -> str:
         return f"Upload complete: {result}"
     except Exception as e:
         return f"Error uploading to KS: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Web tools
+# ---------------------------------------------------------------------------
+
+_FETCH_CHAR_LIMIT = 12_000  # max chars returned from a single page
+
+
+def web_search(query: str, max_results: int = 6) -> str:
+    """Search the web using DuckDuckGo and return a list of results."""
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        return "Error: 'duckduckgo-search' is not installed. Run: pip install duckduckgo-search"
+
+    try:
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(query, max_results=max_results))
+    except Exception as e:
+        return f"Error searching the web: {e}"
+
+    if not hits:
+        return f"No results found for: {query}"
+
+    lines = [f"Web search results for: {query}\n"]
+    for i, h in enumerate(hits, 1):
+        title = h.get("title", "")
+        url   = h.get("href", "")
+        body  = h.get("body", "")
+        lines.append(f"{i}. {title}\n   {url}\n   {body}\n")
+    return "\n".join(lines)
+
+
+def fetch_page(url: str, selector: str = "") -> str:
+    """Fetch a web page and return its readable text content."""
+    try:
+        import requests
+    except ImportError:
+        return "Error: 'requests' is not installed. Run: pip install requests"
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return "Error: 'beautifulsoup4' is not installed. Run: pip install beautifulsoup4"
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; zup-cli/1.0)"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        return f"Error fetching {url}: {e}"
+
+    try:
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Remove noise tags
+        for tag in soup(["script", "style", "noscript", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+
+        # Optional CSS selector to scope the content
+        if selector:
+            node = soup.select_one(selector)
+            if node is None:
+                return f"Error: selector '{selector}' not found on {url}"
+            text = node.get_text(separator="\n", strip=True)
+        else:
+            text = soup.get_text(separator="\n", strip=True)
+
+        # Collapse blank lines
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        text = "\n".join(lines)
+
+        if len(text) > _FETCH_CHAR_LIMIT:
+            text = text[:_FETCH_CHAR_LIMIT] + f"\n\n... (truncated, {len(text)} total chars)"
+
+        return f"Page: {url}\n\n{text}"
+    except Exception as e:
+        return f"Error parsing {url}: {e}"

@@ -28,6 +28,8 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "get_ks_details": tool_module.get_ks_details_tool,
     "create_knowledge_source": tool_module.create_ks_tool,
     "upload_to_knowledge_source": tool_module.upload_to_ks_tool,
+    "web_search": tool_module.web_search,
+    "fetch_page": tool_module.fetch_page,
 }
 
 # ---------------------------------------------------------------------------
@@ -73,6 +75,8 @@ _TOOL_SIGNATURES: dict[str, str] = {
     "get_ks_details":            'get_ks_details(slug="<string>")',
     "create_knowledge_source":   'create_knowledge_source(name="<string>", slug="<string>", description="<optional>")',
     "upload_to_knowledge_source":'upload_to_knowledge_source(file_path="<string>", ks_slug="<string>")',
+    "web_search":                'web_search(query="<string>", max_results=<int optional, default 6>)',
+    "fetch_page":                'fetch_page(url="<string>", selector="<css selector optional>")',
 }
 
 _PARSE_ERROR_SENTINEL = "__PARSE_ERROR__"
@@ -255,6 +259,13 @@ create_knowledge_source – Create a new knowledge source.
 
 upload_to_knowledge_source – Upload a local file to a knowledge source.
   params: {{"file_path": "<string>", "ks_slug": "<string>"}}
+
+web_search       – Search the web via DuckDuckGo and return ranked results.
+  params: {{"query": "<string>", "max_results": <int (optional, default 6)>}}
+
+fetch_page       – Fetch a URL and return its readable text content (crawling).
+  params: {{"url": "<string>", "selector": "<css selector (optional)>"}}
+  Use selector to scope to a specific element, e.g. "article" or "main".
 
 ## Context
 Working directory: {cwd}

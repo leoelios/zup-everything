@@ -577,6 +577,10 @@ HELP_TEXT = """
   @multi <prompt>               Split task into parallel subtasks and merge results
   @insecure <prompt>            Auto-accept all tool actions without confirmation
 
+[bold cyan]Web tools (used by the agent)[/bold cyan]
+  web_search <query>            Search the web via DuckDuckGo
+  fetch_page <url>              Fetch and read a web page
+
 [bold cyan]Usage[/bold cyan]
   Type any message and press Enter. The AI reads/writes files,
   runs shell commands, and manages knowledge sources as needed.
