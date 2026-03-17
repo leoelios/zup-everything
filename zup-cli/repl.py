@@ -320,11 +320,11 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         path = parameters.get("path", "?")
         content = parameters.get("content", "")
         lines = content.splitlines()
-        shown = lines[:20]
+        shown = lines[:10]
         preview_lines = [f"  Write file: {path}", ""]
         preview_lines += [f"    {ln}" for ln in shown]
-        if len(lines) > 20:
-            preview_lines.append(f"    ... ({len(lines) - 20} more lines)")
+        if len(lines) > 10:
+            preview_lines.append(f"    ... ({len(lines) - 10} more lines)")
     elif name == "edit_file":
         path = parameters.get("path", "?")
         old_str = parameters.get("old_str", "")
@@ -376,16 +376,20 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         state["result"] = "Decline"
         event.app.exit()
 
-    def _get_text():
+    def _get_preview():
         lines = [("class:title", f"\n  Confirm action: {name}\n\n")]
         for ln in preview_lines:
             lines.append(("class:preview", ln + "\n"))
-        lines.append(("", "\n  ↑/↓ or a/d · Enter to confirm\n\n"))
+        return lines
+
+    def _get_options():
+        lines = [("", "\n  ↑/↓ or a/d · Enter to confirm\n\n")]
         for i, opt in enumerate(OPTIONS):
             selected = i == state["index"]
             marker = "  ● " if selected else "  ○ "
             style = "class:selected" if selected else "class:option"
             lines.append((style, f"{marker}{opt}\n"))
+        lines.append(("", "\n"))
         return lines
 
     style = PTStyle.from_dict({
@@ -395,8 +399,21 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         "option":   "",
     })
 
+    # Fixed height for options panel: header line + N options + blank line
+    options_height = len(OPTIONS) + 4
+
     layout = Layout(
-        HSplit([Window(content=FormattedTextControl(_get_text, focusable=True))])
+        HSplit([
+            Window(
+                content=FormattedTextControl(_get_preview),
+                dont_extend_height=True,
+            ),
+            Window(
+                content=FormattedTextControl(_get_options, focusable=True),
+                height=options_height,
+                dont_extend_height=True,
+            ),
+        ])
     )
 
     app: Application = Application(

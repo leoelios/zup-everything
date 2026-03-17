@@ -79,14 +79,18 @@ def list_files(path: str = ".", pattern: str = "**/*") -> str:
         return f"Error: directory not found: {dpath}"
     try:
         matches = glob(os.path.join(dpath, pattern), recursive=True)
-        files = sorted(
-            os.path.relpath(m, dpath) for m in matches if os.path.isfile(m)
-        )
-        if not files:
-            return f"No files found in {dpath} matching '{pattern}'"
+        entries = []
+        for m in sorted(matches):
+            rel = os.path.relpath(m, dpath)
+            if os.path.isdir(m):
+                entries.append(rel + "/")
+            else:
+                entries.append(rel)
+        if not entries:
+            return f"No entries found in {dpath} matching '{pattern}'"
         # Cap at 300 to avoid huge outputs
-        truncated = files[:300]
-        suffix = f"\n... ({len(files) - 300} more)" if len(files) > 300 else ""
+        truncated = entries[:300]
+        suffix = f"\n... ({len(entries) - 300} more)" if len(entries) > 300 else ""
         return f"Files in {dpath}:\n" + "\n".join(truncated) + suffix
     except Exception as e:
         return f"Error listing files: {e}"

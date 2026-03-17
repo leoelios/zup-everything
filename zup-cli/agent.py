@@ -206,6 +206,9 @@ Rules:
 - After receiving <tool_result> blocks, continue working or give your final answer.
 - Do NOT repeat tool calls that already have results.
 - If a tool result contains an error, read the error carefully, correct your approach, and retry.
+- NEVER output file contents as text to the user. If you need to create or modify a file, \
+ALWAYS use write_file or edit_file tools — never paste the file content in your response. \
+Outputting code blocks that represent full file contents without calling a tool is forbidden.
 
 ## Available Tools
 
