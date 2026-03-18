@@ -161,20 +161,21 @@ def find_file(name: str, path: str = ".") -> str:
     return f"Found {len(matches)} file(s) matching '{name}':\n" + "\n".join(matches[:50])
 
 
-def search_files(pattern: str, path: str = ".", file_glob: str = "*", context_lines: int = 1) -> str:
-    """Search file contents with a regex. Returns matching lines with context."""
+def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
+    """Search file contents with a regex. Returns every matching line with its line number."""
     dpath = _resolve(path)
     SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+
     try:
         regex = re.compile(pattern, re.IGNORECASE)
-    except re.error as e:
-        return f"Invalid regex: {e}"
+    except re.error:
+        # Pattern is not valid regex — fall back to literal string search
+        regex = re.compile(re.escape(pattern), re.IGNORECASE)
 
-    # Group results by file for readability
     file_hits: dict[str, list[str]] = {}
     total = 0
-    MAX_TOTAL = 150
-    MAX_FILES = 20
+    MAX_TOTAL = 200
+    MAX_FILES = 30
 
     try:
         for root, dirs, files in os.walk(dpath):
@@ -188,24 +189,15 @@ def search_files(pattern: str, path: str = ".", file_glob: str = "*", context_li
                         lines = f.readlines()
                 except OSError:
                     continue
-                rel = os.path.relpath(fpath, dpath).replace("\\", "/")
                 hits: list[str] = []
-                seen_lines: set[int] = set()
                 for i, line in enumerate(lines):
                     if regex.search(line):
-                        # Collect context window
-                        start = max(0, i - context_lines)
-                        end = min(len(lines), i + context_lines + 1)
-                        for j in range(start, end):
-                            if j not in seen_lines:
-                                marker = ">" if j == i else " "
-                                hits.append(f"  {marker} {j+1}: {lines[j].rstrip()}")
-                                seen_lines.add(j)
-                        hits.append("")  # separator between matches
+                        hits.append(f"  {i+1}: {line.rstrip()}")
                         total += 1
                         if total >= MAX_TOTAL:
                             break
                 if hits:
+                    rel = os.path.relpath(fpath, dpath).replace("\\", "/")
                     file_hits[rel] = hits
                 if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
                     break

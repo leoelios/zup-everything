@@ -91,7 +91,7 @@ _TOOL_SIGNATURES: dict[str, str] = {
     "find_file":                 'find_file(name="<glob e.g. index.html, *.py>", path="<optional dir>")',
     "edit_file":                 'edit_file(path="<string>", old_str="<exact text to replace>", new_str="<replacement>")',
     "list_files":                'list_files(path="<string optional>", pattern="<specific glob e.g. **/*.py>", max_depth=<int optional>)',
-    "search_files":              'search_files(pattern="<regex>", path="<optional>", file_glob="<optional>", context_lines=<int optional default 1>)',
+    "search_files":              'search_files(pattern="<regex or literal string>", path="<optional>", file_glob="<optional>")',
     "bash":                      'bash(command="<string>", timeout=<int optional>)',
     "list_knowledge_sources":    'list_knowledge_sources(page=<int optional>, size=<int optional>)',
     "get_ks_objects":            'get_ks_objects(slug="<string>", page=<int optional>, size=<int optional>)',
@@ -324,8 +324,8 @@ list_files       – List files in a directory with a specific glob pattern.
   params: {{"path": "<string (optional)>", "pattern": "<glob (e.g. **/*.py, src/**/*.ts)>", "max_depth": <int (optional, default 3)>}}
   WARNING: avoid pattern="**/*" — use find_file or search_files instead.
 
-search_files     – Search file contents with a regex. Returns matching lines WITH context. Use this first.
-  params: {{"pattern": "<regex>", "path": "<string (optional)>", "file_glob": "<glob (optional)>", "context_lines": <int (optional, default 1)>}}
+search_files     – Search file contents with a regex or literal string. Returns every matching line with its line number. Use read_file for context around a specific line.
+  params: {{"pattern": "<regex or literal string>", "path": "<string (optional)>", "file_glob": "<glob (optional)>"}}
 
 bash             – Execute a shell command.
   params: {{"command": "<string>", "timeout": <int (optional, default 60)>}}
