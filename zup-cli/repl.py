@@ -1,6 +1,7 @@
 """Interactive REPL and slash-command handling."""
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,11 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/ks details",       "/ks details <slug>",        "Get knowledge source details"),
     ("/ks create",        "/ks create <name> <slug>",  "Create a new knowledge source"),
     ("/ks upload",        "/ks upload <file> <slug>",  "Upload a file to a knowledge source"),
+    ("/branch",           "/branch <name>",            "Create worktree + branch and switch CWD"),
+    ("/branch commit",    "/branch commit",            "Commit all changes in current branch"),
+    ("/branch status",    "/branch status",            "Show branch status and recent log"),
+    ("/branch diff",      "/branch diff",              "PR-style diff against base branch"),
+    ("/branch push",      "/branch push",              "Rebase on base branch and push"),
     ("/exit",             "/exit",                    "Quit"),
 ]
 
@@ -434,6 +440,192 @@ def _print_models(data):
     con.print()
 
 
+# ---------------------------------------------------------------------------
+# /branch helpers
+# ---------------------------------------------------------------------------
+
+def _git(*args, cwd: str | None = None) -> tuple[int, str, str]:
+    """Run a git command; return (returncode, stdout, stderr)."""
+    r = subprocess.run(
+        ["git", *args],
+        capture_output=True, text=True,
+        cwd=cwd or os.getcwd(),
+    )
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def _branch_detect_base() -> str:
+    """Return base branch: develop > main > master."""
+    for branch in ("develop", "main", "master"):
+        rc, out, _ = _git("ls-remote", "--heads", "origin", branch)
+        if rc == 0 and out:
+            return branch
+    return "master"
+
+
+def _branch_repo_root() -> str | None:
+    rc, out, _ = _git("rev-parse", "--show-toplevel")
+    return out if rc == 0 else None
+
+
+def _handle_branch(parts: list[str]) -> bool:
+    sub = parts[1].lower() if len(parts) > 1 else ""
+
+    # ── /branch <name> — create worktree + branch ─────────────────────────
+    if sub and sub not in ("commit", "status", "diff", "push"):
+        name = parts[1]
+        root = _branch_repo_root()
+        if not root:
+            display.print_error("Not inside a git repository.")
+            return True
+
+        worktree_path = str(Path(root) / ".git-worktrees" / name)
+        src_dir = os.getcwd()
+
+        # Create the worktree with a new branch
+        rc, out, err = _git("worktree", "add", "-b", name, worktree_path)
+        if rc != 0:
+            # Branch may already exist — try without -b
+            rc, out, err = _git("worktree", "add", worktree_path, name)
+        if rc != 0:
+            display.print_error(f"git worktree add failed: {err}")
+            return True
+
+        # Copy untracked (non-gitignored) files that git worktree doesn't include
+        _, untracked_raw, _ = _git(
+            "ls-files", "--others", "--exclude-standard", cwd=src_dir
+        )
+        if untracked_raw:
+            import shutil
+            copied = 0
+            for rel_path in untracked_raw.splitlines():
+                src_file = Path(src_dir) / rel_path
+                dst_file = Path(worktree_path) / rel_path
+                try:
+                    dst_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dst_file)
+                    copied += 1
+                except Exception:
+                    pass
+            if copied:
+                display.print_info(f"Copied {copied} untracked file(s) to worktree.")
+
+        try:
+            os.chdir(worktree_path)
+            display.print_info(f"Branch '{name}' created. Working directory → {worktree_path}")
+        except Exception as e:
+            display.print_error(f"Could not change directory: {e}")
+        return True
+
+    # ── /branch commit ─────────────────────────────────────────────────────
+    if sub == "commit":
+        _, stat, _ = _git("diff", "--stat", "HEAD")
+        _, staged, _ = _git("diff", "--cached", "--stat")
+        if stat:
+            display.console.print(f"[dim]{stat}[/dim]")
+        if staged:
+            display.console.print(f"[dim]{staged}[/dim]")
+
+        from prompt_toolkit import prompt as pt_prompt
+        try:
+            msg = pt_prompt("Commit message: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            display.print_info("Commit cancelled.")
+            return True
+
+        if not msg:
+            display.print_info("Empty message — commit cancelled.")
+            return True
+
+        _git("add", "-A")
+        rc, out, err = _git("commit", "-m", msg)
+        if rc != 0:
+            display.print_error(err or out)
+        else:
+            display.print_info(out)
+            _, log, _ = _git("log", "--oneline", "-5")
+            display.console.print(f"[dim]{log}[/dim]")
+        return True
+
+    # ── /branch status ─────────────────────────────────────────────────────
+    if sub == "status":
+        _, branch, _ = _git("branch", "--show-current")
+        _, status, _ = _git("status")
+        _, log, _ = _git("log", "--oneline", "-10")
+        _, diffstat, _ = _git("diff", "--stat", "HEAD")
+        display.console.print(f"\n[bold cyan]Branch:[/bold cyan] {branch}\n")
+        display.console.print(f"[dim]{status}[/dim]\n")
+        if diffstat:
+            display.console.print(f"[dim]{diffstat}[/dim]\n")
+        display.console.print(f"[dim]{log}[/dim]\n")
+        return True
+
+    # ── /branch diff ───────────────────────────────────────────────────────
+    if sub == "diff":
+        base = _branch_detect_base()
+        display.print_info(f"Fetching origin/{base}…")
+        _git("fetch", "origin", base)
+
+        _, branch, _ = _git("branch", "--show-current")
+        _, commits, _ = _git("log", "--oneline", f"origin/{base}..HEAD")
+        _, filestat, _ = _git("diff", "--stat", f"origin/{base}...HEAD")
+        _, fulldiff, _ = _git("diff", f"origin/{base}...HEAD")
+        _, uncommitted, _ = _git("diff", "HEAD")
+
+        display.console.print(f"\n[bold cyan]PR diff: {branch} ← {base}[/bold cyan]\n")
+        if commits:
+            display.console.print(f"[bold white]Commits ahead:[/bold white]\n[dim]{commits}[/dim]\n")
+        if filestat:
+            display.console.print(f"[bold white]Files changed:[/bold white]\n[dim]{filestat}[/dim]\n")
+        if fulldiff:
+            display.console.print(f"[dim]{fulldiff[:4000]}{'…' if len(fulldiff) > 4000 else ''}[/dim]\n")
+        if uncommitted:
+            display.console.print(f"[bold white]Uncommitted changes:[/bold white]\n[dim]{uncommitted[:2000]}[/dim]\n")
+        if not commits and not filestat and not uncommitted:
+            display.print_info(f"No differences from origin/{base}.")
+        return True
+
+    # ── /branch push ───────────────────────────────────────────────────────
+    if sub == "push":
+        base = _branch_detect_base()
+        _, branch, _ = _git("branch", "--show-current")
+
+        display.print_info(f"Fetching origin/{base}…")
+        _git("fetch", "origin", base)
+
+        display.print_info(f"Rebasing {branch} onto origin/{base}…")
+        rc, out, err = _git("rebase", f"origin/{base}")
+        if rc != 0:
+            # Show conflicts and abort
+            _, conflicts, _ = _git("diff", "--name-only", "--diff-filter=U")
+            display.print_error(f"Rebase conflict in:\n{conflicts}\n\nResolve manually then run /branch push again.")
+            _git("rebase", "--abort")
+            return True
+
+        display.print_info(f"Pushing {branch}…")
+        rc, out, err = _git("push", "origin", branch, "--force-with-lease")
+        if rc != 0:
+            display.print_error(err or out)
+        else:
+            display.print_info(out or f"Branch '{branch}' pushed successfully.")
+            _, ahead, _ = _git("log", "--oneline", f"origin/{base}..HEAD")
+            if ahead:
+                display.console.print(f"[dim]{ahead}[/dim]")
+        return True
+
+    # ── no sub-command ──────────────────────────────────────────────────────
+    display.console.print("""
+[bold cyan]/branch[/bold cyan] — manage feature branches via git worktrees
+
+  [bold white]/branch <name>[/bold white]    Create worktree + branch and switch CWD to it
+  [bold white]/branch commit[/bold white]    Commit all changes (prompts for message)
+  [bold white]/branch status[/bold white]    Show branch status and recent log
+  [bold white]/branch diff[/bold white]      PR-style diff against develop/main/master
+  [bold white]/branch push[/bold white]      Rebase on base branch and push
+""")
+    return True
+
+
 HELP_TEXT = """
 [bold cyan]Commands[/bold cyan]
   /help                         Show this help
@@ -447,6 +639,11 @@ HELP_TEXT = """
   /ks create <name> <slug> [description...]
                                 Create a new knowledge source
   /ks upload <file> <slug>      Upload a local file to a knowledge source
+  /branch <name>                Create git worktree + branch, switch CWD to it
+  /branch commit                Commit all changes (prompts for message)
+  /branch status                Show branch status and recent log
+  /branch diff                  PR-style diff against develop/main/master
+  /branch push                  Rebase on base branch and push
   /exit                         Quit
 
 [bold cyan]Modifiers[/bold cyan]
@@ -513,6 +710,9 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
         else:
             display.print_info("No agent selected.")
         return True
+
+    if head == "/branch":
+        return _handle_branch(parts)
 
     if head == "/ks":
         if len(parts) < 2:
