@@ -632,6 +632,9 @@ def _process(message: str, agent: Agent):
             display.spinner_stop()
         _orig_tool_result(name, result)
 
+    def _on_bash_output(line: str, is_stderr: bool = False):
+        display.bash_output(line, is_stderr)
+
     def _on_confirm(name: str, params: dict) -> bool:
         display.spinner_stop()
         if insecure_mode:
@@ -660,6 +663,7 @@ def _process(message: str, agent: Agent):
     agent.on_tool_result  = _on_tool_result
     agent.on_confirm_tool = _on_confirm
     agent.on_llm_activity = _on_llm_activity
+    agent.on_bash_output  = _on_bash_output
     # -----------------------------------------------------------------------
 
     try:
@@ -690,6 +694,7 @@ def _process(message: str, agent: Agent):
         agent.on_tool_result  = _orig_tool_result
         agent.on_confirm_tool = _orig_confirm
         agent.on_llm_activity = _orig_llm_activity
+        agent.on_bash_output  = lambda line, is_stderr: None
 
 
 def start_repl(initial_prompt: Optional[str] = None):

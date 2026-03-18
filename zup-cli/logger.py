@@ -106,7 +106,26 @@ def log_tool_call(name: str, parameters: dict):
         _raw(f"  params: {parameters!r}")
 
 
+def log_bash_start(command: str):
+    if not _enabled:
+        return
+    _raw(f"\n[{_ts()}] [BASH COMMAND]")
+    _raw(f"  $ {command}")
+    _raw(f"  --- output ---")
+
+
+def log_bash_output(line: str, is_stderr: bool = False):
+    if not _enabled:
+        return
+    prefix = "stderr| " if is_stderr else "stdout| "
+    _raw(f"  {prefix}{line}")
+
+
 def log_tool_result(name: str, result: str):
+    if name == "bash":
+        if _enabled:
+            _raw(f"  --- end output ---")
+        return
     _block(f"TOOL RESULT  {name}", result)
 
 

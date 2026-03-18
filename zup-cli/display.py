@@ -65,6 +65,7 @@ class _StreamingView:
 
 
 _stream_view: _StreamingView | None = None
+_spinner_view: _StatusSpinner | None = None
 _last_tokens: tuple[int, int] = (0, 0)  # (input, output) from last stream
 
 
@@ -77,15 +78,17 @@ def _fmt_elapsed(seconds: float) -> str:
 
 
 class _StatusSpinner:
-    """Renders:  ✻ label (elapsed · status)"""
+    """Renders:  ✻ label (elapsed · status)  + optional streaming bash output lines."""
 
     _FRAMES = ["✻", "✼", "✽", "✾", "✽", "✼"]
+    _MAX_OUTPUT_LINES = 6
 
     def __init__(self, label: str, status: str) -> None:
         self._label = label
         self._status = status
         self._start = time.monotonic()
         self._tick = 0
+        self.output_lines: list[str] = []
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         frame = self._FRAMES[self._tick % len(self._FRAMES)]
@@ -99,6 +102,8 @@ class _StatusSpinner:
             t.append(f" · {self._status}", style="dim")
         t.append(")", style="dim")
         yield t
+        for line in self.output_lines[-self._MAX_OUTPUT_LINES:]:
+            yield Text("  " + line[:160], style="color(8)")
 
 
 def _stop_live() -> None:
@@ -109,10 +114,11 @@ def _stop_live() -> None:
 
 
 def spinner_start(label: str = "Thinking…", status: str = "thinking") -> None:
-    global _live
+    global _live, _spinner_view
     _stop_live()
+    _spinner_view = _StatusSpinner(label, status)
     _live = Live(
-        _StatusSpinner(label, status),
+        _spinner_view,
         console=console,
         refresh_per_second=8,
         transient=True,
@@ -121,7 +127,16 @@ def spinner_start(label: str = "Thinking…", status: str = "thinking") -> None:
 
 
 def spinner_stop() -> None:
+    global _spinner_view
+    _spinner_view = None
     _stop_live()
+
+
+def bash_output(line: str, is_stderr: bool = False) -> None:
+    """Append a real-time bash output line to the active spinner."""
+    if _spinner_view is not None:
+        prefix = "[err] " if is_stderr else ""
+        _spinner_view.output_lines.append(prefix + line)
 
 
 def stream_start(in_chars: int = 0) -> None:

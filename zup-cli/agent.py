@@ -404,6 +404,7 @@ class Agent:
         on_llm_start: Optional[Callable[[int], None]] = None,
         on_token_count: Optional[Callable[[int, int], None]] = None,
         on_llm_activity: Optional[Callable[[str], None]] = None,
+        on_bash_output: Optional[Callable[[str, bool], None]] = None,
     ):
         from config import get_config
         self.conversation_id: str = str(ULID())
@@ -423,6 +424,7 @@ class Agent:
         self.on_llm_start = on_llm_start or (lambda n: None)
         self.on_token_count = on_token_count or (lambda i, o: None)
         self.on_llm_activity = on_llm_activity or (lambda t: None)
+        self.on_bash_output = on_bash_output or (lambda line, is_stderr: None)
 
     def set_model(self, model_id: str, model_name: str):
         """Set active model and persist the choice."""
@@ -597,11 +599,22 @@ class Agent:
                         f"</tool_result>"
                     )
                     continue
-            result_text = execute_tool(
-                tc["name"],
-                tc["parameters"],
-                parse_error=tc.get("_parse_error"),
-            )
+            if tc["name"] == "bash" and not tc.get("_parse_error"):
+                import logger as _lg
+                _lg.log_bash_start(tc["parameters"].get("command", ""))
+                result_text = tool_module.bash(
+                    **tc["parameters"],
+                    on_output=lambda line, is_stderr: (
+                        self.on_bash_output(line, is_stderr),
+                        _lg.log_bash_output(line, is_stderr),
+                    ),
+                )
+            else:
+                result_text = execute_tool(
+                    tc["name"],
+                    tc["parameters"],
+                    parse_error=tc.get("_parse_error"),
+                )
             self.on_tool_result(tc["name"], result_text)
             logger.log_tool_result(tc["name"], result_text)
             # Truncate large results to avoid flooding the context

@@ -226,26 +226,56 @@ def search_files(pattern: str, path: str = ".", file_glob: str = "*", context_li
 # Shell
 # ---------------------------------------------------------------------------
 
-def bash(command: str, timeout: int = 60) -> str:
+def bash(command: str, timeout: int = 60, on_output=None) -> str:
+    """
+    Execute a shell command, streaming output lines via on_output(line, is_stderr).
+    on_output is called in real-time as lines arrive.
+    """
+    import threading
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             cwd=os.getcwd(),
         )
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+
+        def _read(stream, lines, is_stderr: bool):
+            for raw in stream:
+                line = raw.rstrip("\n")
+                lines.append(line)
+                if on_output:
+                    on_output(line, is_stderr)
+
+        t_out = threading.Thread(target=_read, args=(proc.stdout, stdout_lines, False), daemon=True)
+        t_err = threading.Thread(target=_read, args=(proc.stderr, stderr_lines, True), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            t_out.join(2)
+            t_err.join(2)
+            return f"Command timed out after {timeout}s"
+
+        t_out.join()
+        t_err.join()
+
         parts = []
-        if result.stdout:
-            parts.append(result.stdout.rstrip())
-        if result.stderr:
-            parts.append(f"[stderr]\n{result.stderr.rstrip()}")
-        if result.returncode != 0:
-            parts.append(f"[exit_code {result.returncode}]")
+        if stdout_lines:
+            parts.append("\n".join(stdout_lines).rstrip())
+        if stderr_lines:
+            parts.append(f"[stderr]\n{chr(10).join(stderr_lines).rstrip()}")
+        if proc.returncode != 0:
+            parts.append(f"[exit_code {proc.returncode}]")
         return "\n".join(parts) if parts else "(no output)"
-    except subprocess.TimeoutExpired:
-        return f"Command timed out after {timeout}s"
     except Exception as e:
         return f"Error: {e}"
 
