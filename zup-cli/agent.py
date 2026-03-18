@@ -527,11 +527,6 @@ class Agent:
                         token_info = {"input": in_t, "output": out_t}
                     break
 
-            if "stop_reason" in chunk or "finish_reason" in chunk:
-                if not self._initialized:
-                    self._initialized = True
-                break
-
             msg = chunk.get("message", "")
             if msg:
                 full_message += msg
@@ -539,6 +534,12 @@ class Agent:
                 if not _hint_fired and len(full_message) >= _HINT_THRESHOLD:
                     _hint_fired = True
                     self.on_llm_activity(full_message)
+
+            stop_val = chunk.get("stop_reason") or chunk.get("finish_reason")
+            if stop_val and stop_val != "tool_use":
+                if not self._initialized:
+                    self._initialized = True
+                break
 
         self.on_token_count(token_info.get("input", 0), token_info.get("output", 0))
         logger.log_api_response({"message": full_message, "tokens": token_info, "conversation_id": self.conversation_id})

@@ -45,10 +45,15 @@ class _StreamingView:
         header = Text()
         header.append(f"{frame} ", style="bold yellow")
         header.append("Generating: " + self.hint + "..." if self.hint else "Generating...", style="bold white")
+        def _fmt_tokens(n: int) -> str:
+            if n >= 1000:
+                return f"{n / 1000:.1f}k".replace(".0k", "k")
+            return str(n)
+
         if self.in_chars and not out_chars:
-            token_part = f" · ↑{self.in_chars}"
+            token_part = f" · ↑{_fmt_tokens(self.in_chars)}"
         elif out_chars:
-            token_part = f" · ↑{self.in_chars} ↓{out_chars}"
+            token_part = f" · ↑{_fmt_tokens(self.in_chars)} ↓{_fmt_tokens(out_chars)}"
         else:
             token_part = ""
         header.append(f" ({elapsed}{token_part})", style="dim")
