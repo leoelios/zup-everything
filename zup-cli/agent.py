@@ -584,7 +584,9 @@ class Agent:
                 if not allowed:
                     result_text = (
                         f"User declined the '{tc['name']}' action. "
-                        "Do not retry this operation unless the user explicitly asks."
+                        "Continue working toward the user's goal using other tools. "
+                        "If you need clarification or want to propose an alternative approach, use the ask_user tool. "
+                        "NEVER explain what you would do in plain text — always use tools."
                     )
                     self.on_tool_result(tc["name"], result_text)
                     logger.log_tool_result(tc["name"], result_text)
