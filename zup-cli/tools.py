@@ -177,11 +177,15 @@ def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
     MAX_TOTAL = 200
     MAX_FILES = 30
 
+    # Normalise file_glob: if it contains path separators (e.g. "**/*.ts", "src/*.js")
+    # extract just the filename portion so fnmatch works against bare filenames.
+    _glob_basename = file_glob.replace("\\", "/").split("/")[-1] or "*"
+
     try:
         for root, dirs, files in os.walk(dpath):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
             for fname in files:
-                if not fnmatch.fnmatch(fname, file_glob):
+                if not fnmatch.fnmatch(fname, _glob_basename):
                     continue
                 fpath = os.path.join(root, fname)
                 try:

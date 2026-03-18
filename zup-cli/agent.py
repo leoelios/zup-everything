@@ -327,8 +327,12 @@ list_files       – List files in a directory with a specific glob pattern.
 search_files     – Search file contents with a regex or literal string. Returns every matching line with its line number. Use read_file for context around a specific line.
   params: {{"pattern": "<regex or literal string>", "path": "<string (optional)>", "file_glob": "<glob (optional)>"}}
 
-bash             – Execute a shell command.
+bash             – Execute a shell command. The environment is Windows (cmd.exe).
   params: {{"command": "<string>", "timeout": <int (optional, default 60)>}}
+  IMPORTANT: Always use Windows-compatible commands. Never use Unix commands.
+  Use: dir, type, del, copy, move, mkdir, rmdir, findstr, echo, cd, where, tasklist, powershell
+  Never use: ls, cat, rm, cp, mv, grep, touch, chmod, which, ps, kill, find (Unix)
+  For complex operations prefer PowerShell: powershell -Command "..."
   output markers: [stderr] precedes error output; [exit_code N] (N≠0) means the command failed.
   On failure: reason about the cause from [stderr]/[exit_code], then retry with a fix or try an alternative approach.
 
@@ -362,6 +366,7 @@ ask_user         – Ask the user a clarifying question with up to 3 choices; th
 
 ## Context
 Working directory: {cwd}
+OS: Windows — shell is cmd.exe. Always use Windows commands in bash tool calls.
 
 ## Response Style
 - Be concise and direct. Lead with action, not explanation.
