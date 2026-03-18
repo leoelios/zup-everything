@@ -583,13 +583,22 @@ class Agent:
             if tc["name"] in self.CONFIRM_TOOLS and not tc.get("_parse_error"):
                 allowed = self.on_confirm_tool(tc["name"], tc["parameters"])
                 logger.log_tool_confirm(tc["name"], allowed)
-                if not allowed:
-                    result_text = (
-                        f"User declined the '{tc['name']}' action. "
-                        "Continue working toward the user's goal using other tools. "
-                        "If you need clarification or want to propose an alternative approach, use the ask_user tool. "
-                        "NEVER explain what you would do in plain text — always use tools."
-                    )
+                if allowed is not True:
+                    if isinstance(allowed, str) and allowed:
+                        result_text = (
+                            f"User declined the '{tc['name']}' action and provided a reason: \"{allowed}\". "
+                            "Reconsider your approach taking this feedback into account. "
+                            "If a different action or approach would satisfy the user's goal, use that instead. "
+                            "If you need clarification, use the ask_user tool. "
+                            "NEVER explain what you would do in plain text — always use tools."
+                        )
+                    else:
+                        result_text = (
+                            f"User declined the '{tc['name']}' action. "
+                            "Continue working toward the user's goal using other tools. "
+                            "If you need clarification or want to propose an alternative approach, use the ask_user tool. "
+                            "NEVER explain what you would do in plain text — always use tools."
+                        )
                     self.on_tool_result(tc["name"], result_text)
                     logger.log_tool_result(tc["name"], result_text)
                     parts.append(

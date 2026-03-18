@@ -80,6 +80,10 @@ def edit_file(path: str, old_str: str, new_str: str) -> str:
 
         new_content = content.replace(old_str, new_str, 1)
 
+        if not new_content.strip():
+            os.remove(fpath)
+            return f"Deleted {fpath} (file became empty after edit)"
+
         # Heuristic: if the replaced chunk covers most of the file, skip the
         # string-search overhead and just overwrite the whole file directly.
         total_lines = max(len(content.splitlines()), 1)

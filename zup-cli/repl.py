@@ -299,7 +299,7 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
     else:
         preview_lines = [f"  {name}: {parameters}"]
 
-    OPTIONS = ["Accept", "Decline"]
+    OPTIONS = ["Accept", "Decline", "Decline and type reason"]
     state = {"index": 0, "result": None}
 
     kb = KeyBindings()
@@ -327,9 +327,18 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
 
     @kb.add("d")
     @kb.add("n")
+    def _decline(event):
+        state["result"] = "Decline"
+        event.app.exit()
+
+    @kb.add("t")
+    def _decline_type(event):
+        state["result"] = "Decline and type reason"
+        event.app.exit()
+
     @kb.add("escape")
     @kb.add("c-c")
-    def _decline(event):
+    def _cancel(event):
         state["result"] = "Decline"
         event.app.exit()
 
@@ -342,7 +351,7 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         return lines
 
     def _get_options():
-        lines = [("", "\n  ↑/↓ or a/d · Enter to confirm\n\n")]
+        lines = [("", "\n  ↑/↓ · a=accept · d=decline · t=decline+reason · Enter\n\n")]
         for i, opt in enumerate(OPTIONS):
             selected = i == state["index"]
             marker = "  ● " if selected else "  ○ "
@@ -387,7 +396,17 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
     )
     app.run()
 
-    return state["result"] == "Accept"
+    choice = state["result"]
+    if choice == "Accept":
+        return True
+    if choice == "Decline and type reason":
+        from prompt_toolkit import prompt as pt_prompt
+        try:
+            reason = pt_prompt("Reason for declining: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            reason = ""
+        return reason if reason else False
+    return False
 
 
 def _print_models(data):
