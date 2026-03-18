@@ -5,6 +5,18 @@ from typing import Generator, Optional
 from auth import get_token
 from config import get_config, DEFAULT_AGENT_ID
 
+_RETRY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError)
+_MAX_RETRIES = 5
+_RETRY_BACKOFF = [1, 2, 4, 8, 16]  # seconds between attempts
+
+
+def _should_retry(exc: Exception) -> bool:
+    if isinstance(exc, _RETRY_ERRORS):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (502, 503, 504):
+        return True
+    return False
+
 CHAT_BASE = "https://genai-inference-app.stackspot.com"
 DATA_BASE = "https://data-integration-api.stackspot.com"
 KS_BASE = DATA_BASE
@@ -49,11 +61,22 @@ def chat_nonstream(
     import logger
     logger.log_api_request(prompt, conversation_id, selected_model, streaming=False)
 
-    resp = httpx.post(url, json=payload, headers=_headers(), timeout=120.0)
-    resp.raise_for_status()
-    result = resp.json()
-    logger.log_api_response(result)
-    return result
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(_MAX_RETRIES):
+        try:
+            resp = httpx.post(url, json=payload, headers=_headers(), timeout=120.0)
+            resp.raise_for_status()
+            result = resp.json()
+            logger.log_api_response(result)
+            return result
+        except Exception as exc:
+            last_exc = exc
+            if not _should_retry(exc) or attempt == _MAX_RETRIES - 1:
+                raise
+            wait = _RETRY_BACKOFF[attempt]
+            logger.log_error("chat_nonstream retry", exc)
+            time.sleep(wait)
+    raise last_exc
 
 
 def chat_stream(
@@ -82,19 +105,34 @@ def chat_stream(
     headers = _headers(accept="text/event-stream")
 
     import logger as _logger
-    with httpx.stream("POST", url, json=payload, headers=headers, timeout=120.0) as resp:
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            line = line.strip()
-            if line.startswith("data: "):
-                data_str = line[6:]
-                if data_str:
-                    try:
-                        chunk = json.loads(data_str)
-                        _logger._block("SSE CHUNK", str(chunk)) if _logger.is_enabled() else None
-                        yield chunk
-                    except json.JSONDecodeError:
-                        pass
+
+    # Separate timeouts: short connect window, long read window (LLMs can be slow)
+    _timeout = httpx.Timeout(connect=15.0, read=300.0, write=30.0, pool=15.0)
+
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(_MAX_RETRIES):
+        try:
+            with httpx.stream("POST", url, json=payload, headers=headers, timeout=_timeout) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    line = line.strip()
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str:
+                            try:
+                                chunk = json.loads(data_str)
+                                _logger._block("SSE CHUNK", str(chunk)) if _logger.is_enabled() else None
+                                yield chunk
+                            except json.JSONDecodeError:
+                                pass
+            return  # stream completed successfully
+        except Exception as exc:
+            last_exc = exc
+            if not _should_retry(exc) or attempt == _MAX_RETRIES - 1:
+                raise
+            wait = _RETRY_BACKOFF[attempt]
+            _logger.log_error("chat_stream retry", exc) if hasattr(_logger, "log_error") else None
+            time.sleep(wait)
 
 
 # ---------------------------------------------------------------------------
