@@ -65,7 +65,6 @@ class _StreamingView:
 
 
 _stream_view: _StreamingView | None = None
-_spinner_view: _StatusSpinner | None = None
 _last_tokens: tuple[int, int] = (0, 0)  # (input, output) from last stream
 
 
@@ -104,6 +103,9 @@ class _StatusSpinner:
         yield t
         for line in self.output_lines[-self._MAX_OUTPUT_LINES:]:
             yield Text("  " + line[:160], style="color(8)")
+
+
+_spinner_view: _StatusSpinner | None = None
 
 
 def _stop_live() -> None:
