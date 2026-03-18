@@ -39,6 +39,7 @@ def main():
         "--console",                    # Console application
         "--clean",                      # Clean cache
         "--noconfirm",                  # Overwrite without asking
+        "--add-data=assets/icon.txt;assets",  # Include icon asset
         "main.py"
     ]
     

@@ -26,7 +26,7 @@ This will:
 - Install PyInstaller if needed
 - Clean previous builds
 - Create a single `zup.exe` file in the `dist/` folder
-- Bundle all dependencies (no Python required on target machine)
+- Bundle all dependencies and required assets (including `assets/icon.txt`) so no Python is required on the target machine
 
 ### 3. Distribute
 
