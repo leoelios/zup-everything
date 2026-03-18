@@ -18,8 +18,8 @@ import tools as tool_module
 
 TOOL_REGISTRY: dict[str, Callable] = {
     "read_file": tool_module.read_file,
-    "write_file": tool_module.write_file,
     "edit_file": tool_module.edit_file,
+    "find_file": tool_module.find_file,
     "list_files": tool_module.list_files,
     "search_files": tool_module.search_files,
     "bash": tool_module.bash,
@@ -53,6 +53,28 @@ def _is_bash_error(result: str) -> bool:
     return bool(re.search(r"\[exit_code \d*[1-9]\d*\]", result))
 
 
+def get_activity_hint(content: str) -> str:
+    """Call LLM to get a short phrase describing what the agent is currently doing."""
+    from api_client import chat_nonstream
+    from ulid import ULID as _ULID
+
+    prompt = (
+        "Analyze the following AI assistant output and respond with ONE short phrase "
+        "(3-8 words) describing what the AI is doing right now. "
+        "Examples: 'Lendo arquivos do projeto', 'Escrevendo testes', 'Analisando o código', "
+        "'Planning the implementation', 'Searching for relevant files'. "
+        "Reply with ONLY the phrase — no punctuation at the end, nothing else.\n\n"
+        f"Output:\n{content[:600]}"
+    )
+    try:
+        result = chat_nonstream(prompt, conversation_id=str(_ULID()))
+        hint = result.get("message", "").strip()
+        hint = THINKING_RE.sub("", hint).strip()
+        return hint[:70] if hint else ""
+    except Exception:
+        return ""
+
+
 def parse_thinking(text: str) -> str:
     """Extract content from <thinking>...</thinking> blocks."""
     blocks = THINKING_RE.findall(text)
@@ -66,10 +88,10 @@ def strip_thinking(text: str) -> str:
 # Expected parameter signatures shown to the LLM on correction
 _TOOL_SIGNATURES: dict[str, str] = {
     "read_file":                 'read_file(path="<string>")',
-    "write_file":                'write_file(path="<string>", content="<string>")',
+    "find_file":                 'find_file(name="<glob e.g. index.html, *.py>", path="<optional dir>")',
     "edit_file":                 'edit_file(path="<string>", old_str="<exact text to replace>", new_str="<replacement>")',
-    "list_files":                'list_files(path="<string optional>", pattern="<glob optional>")',
-    "search_files":              'search_files(pattern="<regex>", path="<optional>", file_glob="<optional>")',
+    "list_files":                'list_files(path="<string optional>", pattern="<specific glob e.g. **/*.py>", max_depth=<int optional>)',
+    "search_files":              'search_files(pattern="<regex>", path="<optional>", file_glob="<optional>", context_lines=<int optional default 1>)',
     "bash":                      'bash(command="<string>", timeout=<int optional>)',
     "list_knowledge_sources":    'list_knowledge_sources(page=<int optional>, size=<int optional>)',
     "get_ks_objects":            'get_ks_objects(slug="<string>", page=<int optional>, size=<int optional>)',
@@ -95,6 +117,18 @@ def _try_parse_xml_params(text: str) -> dict | None:
     return {k: v.strip() for k, v in matches}
 
 
+def _try_parse_python_dict(text: str) -> dict | None:
+    """Try to parse Python dict syntax, e.g. {'path': 'foo'} (single quotes)."""
+    import ast
+    try:
+        result = ast.literal_eval(text)
+        if isinstance(result, dict):
+            return result
+    except (ValueError, SyntaxError):
+        pass
+    return None
+
+
 def parse_tool_calls(text: str) -> list[dict]:
     calls = []
     for m in TOOL_CALL_RE.finditer(text):
@@ -104,13 +138,18 @@ def parse_tool_calls(text: str) -> list[dict]:
         try:
             params = json.loads(params_str)
         except json.JSONDecodeError as e:
-            # Attempt XML-style fallback before reporting an error
+            # Attempt XML-style fallback
             xml_params = _try_parse_xml_params(params_str)
             if xml_params is not None:
                 params = xml_params
             else:
-                params = {}
-                parse_error = f"{e} — raw content was: {params_str!r}"
+                # Attempt Python-dict fallback (e.g. single-quoted keys/values)
+                py_params = _try_parse_python_dict(params_str)
+                if py_params is not None:
+                    params = py_params
+                else:
+                    params = {}
+                    parse_error = f"{e} — raw content was: {params_str!r}"
         calls.append({"name": name, "parameters": params, "_parse_error": parse_error})
     return calls
 
@@ -165,6 +204,9 @@ def _correction_note() -> str:
         "2. Fix the tool name or parameters exactly as shown in the error.\n"
         "3. For edit_file errors: first call read_file to get the exact text, "
         "then use that exact text as old_str.\n"
+        "   IMPORTANT: If read_file returned 'Error: file not found', do NOT call "
+        "edit_file on that path — the file does not exist. Use list_files or "
+        "search_files to find the correct path before editing.\n"
         "4. For bash errors: check [exit_code N] and [stderr] output. Reason about "
         "WHY the command failed (missing dependency, wrong path, permission, syntax error, etc.) "
         "and retry with a corrected command or a different approach.\n"
@@ -173,13 +215,28 @@ def _correction_note() -> str:
     )
 
 
-def _completion_note() -> str:
-    """Appended when all tool calls succeeded — tells the model to stop and summarise."""
+_READ_ONLY_TOOLS = {
+    "read_file", "find_file", "list_files", "search_files",
+    "list_knowledge_sources", "get_ks_objects", "get_ks_details",
+    "web_search", "fetch_page",
+}
+
+
+def _completion_note(last_tools: list[str] | None = None) -> str:
+    """Appended when all tool calls succeeded — model decides whether to continue or wrap up."""
+    if last_tools and all(t in _READ_ONLY_TOOLS for t in last_tools):
+        return (
+            "\n<system_note>\n"
+            "Tool call completed. This was a read/search operation — the task is NOT done yet.\n"
+            "You MUST continue: call the next tool to make progress toward completing the user's request.\n"
+            "Do NOT report results or summarize until you have actually applied all changes.\n"
+            "</system_note>"
+        )
     return (
         "\n<system_note>\n"
-        "All tool calls completed successfully. "
-        "Provide your final response to the user now. "
-        "Do NOT call any more tools unless the user explicitly asks for additional work.\n"
+        "Tool call completed. "
+        "If the task is fully done, provide your final response now. "
+        "If more steps are needed, call the next tool.\n"
         "</system_note>"
     )
 
@@ -210,13 +267,18 @@ Before acting on any non-trivial request, reason through it inside <thinking>...
 Use this as your private scratchpad: break down the problem, plan which tools to use and in what
 order, and check your logic before committing to an approach.
 
+IMPORTANT: Thinking is planning only — it does NOT execute anything. After the </thinking> block,
+you MUST output the actual <tool_call> tags in your response body to execute tools.
+Thinking about calling a tool is NOT the same as calling it. The tool call XML must appear
+OUTSIDE the thinking block to be executed.
+
 Example:
 <thinking>
 The user wants to add a new function. I should first read the file to understand the structure,
 then edit the right location. Let me list files first to find the correct path.
 </thinking>
 
-## Tool Protocol
+## Tool call
 
 To use a tool output EXACTLY this format (no extra whitespace inside tags):
 
@@ -228,33 +290,42 @@ WRONG:     <parameters><path>src/main.py</path></parameters>
 WRONG:     <parameters>src/main.py</parameters>
 
 Rules:
-- You may chain multiple tool calls in one response.
 - Always read a file before editing it.
 - After receiving <tool_result> blocks, continue working or give your final answer.
 - Do NOT repeat tool calls that already have results.
 - If a tool result contains an error, read the error carefully, correct your approach, and retry.
-- NEVER output file contents as text to the user. If you need to create or modify a file, \
-ALWAYS use write_file or edit_file tools — never paste the file content in your response. \
-Outputting code blocks that represent full file contents without calling a tool is forbidden.
 - NEVER ask the user a question or present options as plain text. \
-ALWAYS use the ask_user tool when you need clarification or want to offer choices.
+- ALWAYS use the ask_user tool when you need clarification or want to offer choices.
+
+## File Edit Rules
+
+1. **Read before editing** — always call `read_file` first. Never assume file contents.
+2. **Use `edit_file` for existing files**
+3. **Base every edit on the actual file content** — copy the exact `old_str` from what `read_file` returned.
+5. **Use the right search tool**:
+   - Know the filename? → `find_file(name="index.html")`
+   - Looking for code/text inside files? → `search_files(pattern="keyword")`
+   - Avoid `list_files(pattern="**/*")`
 
 ## Available Tools
 
 read_file        – Read a file with line numbers.
   params: {{"path": "<string>"}}
 
-write_file       – Create or overwrite a file.
-  params: {{"path": "<string>", "content": "<string>"}}
+edit_file        – Modify an existing file, or create a new one.
+  To modify: {{"path": "<string>", "old_str": "<exact unique text to replace>", "new_str": "<replacement>"}}
+  To create:  {{"path": "<string>", "old_str": "", "new_str": "<full file content>"}}
+  Always copy old_str verbatim from read_file output. Chain multiple calls for multiple changes.
 
-edit_file        – Replace ONE unique occurrence of a string in a file.
-  params: {{"path": "<string>", "old_str": "<string>", "new_str": "<string>"}}
+find_file        – Find files by name. Use this first when you know the filename.
+  params: {{"name": "<glob e.g. index.html, *.py, config.*>", "path": "<string (optional)>"}}
 
-list_files       – List files in a directory.
-  params: {{"path": "<string (optional)>", "pattern": "<glob (optional, default: **/*)>"}}
+list_files       – List files in a directory with a specific glob pattern.
+  params: {{"path": "<string (optional)>", "pattern": "<glob (e.g. **/*.py, src/**/*.ts)>", "max_depth": <int (optional, default 3)>}}
+  WARNING: avoid pattern="**/*" — use find_file or search_files instead.
 
-search_files     – Search file contents with a regex.
-  params: {{"pattern": "<regex>", "path": "<string (optional)>", "file_glob": "<glob (optional)>"}}
+search_files     – Search file contents with a regex. Returns matching lines WITH context. Use this first.
+  params: {{"pattern": "<regex>", "path": "<string (optional)>", "file_glob": "<glob (optional)>", "context_lines": <int (optional, default 1)>}}
 
 bash             – Execute a shell command.
   params: {{"command": "<string>", "timeout": <int (optional, default 60)>}}
@@ -303,9 +374,14 @@ def build_system_prompt() -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(cwd=os.getcwd())
 
 
-_TOOL_REMINDER = (
-    "[Tool reminder: use <tool_call><name>NAME</name><parameters>{{...}}</parameters></tool_call>]"
-)
+_TOOL_REMINDER = """\
+[System reminder]
+You are an AI coding assistant with direct tool access. You MUST call tools yourself to read, write, and edit files.
+NEVER ask the user to run commands manually. NEVER explain what the user should do. Just do it.
+To act, emit tool calls in this exact format:
+<tool_call><name>TOOL_NAME</name><parameters>{"key": "value"}</parameters></tool_call>
+Parameters must be valid JSON with double-quoted keys and string values.
+[End system reminder]"""
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +392,7 @@ class Agent:
     MAX_TOOL_ITERATIONS = 15
 
     # Tools that mutate the filesystem or run shell commands — require user confirmation
-    CONFIRM_TOOLS = {"write_file", "edit_file", "bash"}
+    CONFIRM_TOOLS = {"edit_file", "bash"}
 
     def __init__(
         self,
@@ -325,8 +401,9 @@ class Agent:
         on_thinking: Optional[Callable[[str], None]] = None,
         on_llm_chunk: Optional[Callable[[str], None]] = None,
         on_confirm_tool: Optional[Callable[[str, dict], bool]] = None,
-        on_llm_start: Optional[Callable[[], None]] = None,
+        on_llm_start: Optional[Callable[[int], None]] = None,
         on_token_count: Optional[Callable[[int, int], None]] = None,
+        on_llm_activity: Optional[Callable[[str], None]] = None,
     ):
         from config import get_config
         self.conversation_id: str = str(ULID())
@@ -343,8 +420,9 @@ class Agent:
         self.on_llm_chunk = on_llm_chunk or (lambda c: None)
         # Returns True to allow, False to deny; defaults to always allow
         self.on_confirm_tool = on_confirm_tool or (lambda n, p: True)
-        self.on_llm_start = on_llm_start or (lambda: None)
+        self.on_llm_start = on_llm_start or (lambda n: None)
         self.on_token_count = on_token_count or (lambda i, o: None)
+        self.on_llm_activity = on_llm_activity or (lambda t: None)
 
     def set_model(self, model_id: str, model_name: str):
         """Set active model and persist the choice."""
@@ -395,14 +473,14 @@ class Agent:
                 full_prompt,
                 conversation_id=self.conversation_id,
                 agent_id=self.selected_agent_id,
-                selected_model=self.selected_model,
+                selected_model=None #self.selected_model,
             )
         else:
             result = chat_nonstream(
                 full_prompt,
                 conversation_id=self.conversation_id,
                 agent_id=self.selected_agent_id,
-                selected_model=self.selected_model,
+                selected_model=None #self.selected_model,
             )
             if not self._initialized:
                 self._initialized = True
@@ -426,10 +504,12 @@ class Agent:
         )
 
         logger.log_api_request(full_prompt, self.conversation_id, self.selected_model, streaming=True)
-        self.on_llm_start()
+        self.on_llm_start(len(full_prompt))
 
         full_message = ""
         token_info: dict = {}
+        _hint_fired = False
+        _HINT_THRESHOLD = 150
 
         for chunk in chat_stream(
             full_prompt,
@@ -437,18 +517,31 @@ class Agent:
             agent_id=self.selected_agent_id,
             selected_model=self.selected_model,
         ):
-            if "stop_reason" in chunk:
-                token_info = chunk.get("tokens", {})
+            # Extract tokens from ANY chunk that carries them
+            for tkey in ("tokens", "token_usage", "usage"):
+                raw_t = chunk.get(tkey)
+                if isinstance(raw_t, dict):
+                    in_t = raw_t.get("input") or raw_t.get("input_tokens") or raw_t.get("prompt_tokens") or 0
+                    out_t = raw_t.get("output") or raw_t.get("output_tokens") or raw_t.get("completion_tokens") or 0
+                    if in_t or out_t:
+                        token_info = {"input": in_t, "output": out_t}
+                    break
+
+            if "stop_reason" in chunk or "finish_reason" in chunk:
                 if not self._initialized:
                     self._initialized = True
                 break
+
             msg = chunk.get("message", "")
             if msg:
                 full_message += msg
                 self.on_llm_chunk(msg)
+                if not _hint_fired and len(full_message) >= _HINT_THRESHOLD:
+                    _hint_fired = True
+                    self.on_llm_activity(full_message)
 
         self.on_token_count(token_info.get("input", 0), token_info.get("output", 0))
-        logger.log_api_response({"message": full_message, "tokens": token_info})
+        logger.log_api_response({"message": full_message, "tokens": token_info, "conversation_id": self.conversation_id})
         return full_message, token_info
 
     # ------------------------------------------------------------------
@@ -508,10 +601,15 @@ class Agent:
             )
             self.on_tool_result(tc["name"], result_text)
             logger.log_tool_result(tc["name"], result_text)
+            # Truncate large results to avoid flooding the context
+            _MAX_RESULT_CHARS = 6000
+            truncated = result_text
+            if len(result_text) > _MAX_RESULT_CHARS:
+                truncated = result_text[:_MAX_RESULT_CHARS] + f"\n... [truncated — {len(result_text) - _MAX_RESULT_CHARS} more chars]"
             parts.append(
                 f"<tool_result>\n"
                 f"<name>{tc['name']}</name>\n"
-                f"<content>{result_text}</content>\n"
+                f"<content>{truncated}</content>\n"
                 f"</tool_result>"
             )
             if _is_error(result_text):
@@ -523,7 +621,9 @@ class Agent:
         Agent loop with chain-of-thought and self-correction (streaming internally).
         Returns the final text response.
         """
+        original_request = user_message
         prompt = user_message
+        context_summary = ""
 
         for _ in range(self.MAX_TOOL_ITERATIONS):
             message, _tokens = self._stream_collect(prompt)
@@ -533,6 +633,10 @@ class Agent:
             if not tool_calls:
                 return strip_thinking(message)
 
+            # Execute only the FIRST tool call per iteration — forces step-by-step execution
+            # and prevents the model from planning+executing everything at once (hallucination risk).
+            tool_calls = tool_calls[:1]
+
             result_parts, had_errors = self._execute_tools(tool_calls)
             tool_block = "\n\n".join(result_parts)
             used_ask_user = any(tc["name"] == "ask_user" for tc in tool_calls)
@@ -541,19 +645,26 @@ class Agent:
             elif used_ask_user:
                 suffix = _ask_user_note()
             else:
-                suffix = _completion_note()
+                suffix = _completion_note([tc["name"] for tc in tool_calls])
 
+            goal = f"[Task: {original_request}]"
+            # Rolling context: keep model's latest synthesis but discard old raw tool results.
+            # This prevents the prompt from growing unboundedly across iterations.
+            if text_part.strip():
+                context_summary = text_part.strip()
             prompt = (
-                f"{text_part}\n\n{tool_block}{suffix}"
-                if text_part
-                else f"{tool_block}{suffix}"
+                f"{goal}\n\n[Progress]: {context_summary}\n\n{tool_block}{suffix}"
+                if context_summary
+                else f"{goal}\n\n{tool_block}{suffix}"
             )
 
         return "Reached maximum tool iterations without a final response."
 
     def stream(self, user_message: str) -> Generator[str, None, None]:
         """Streaming-compatible agent loop (tool turns are non-streaming)."""
+        original_request = user_message
         prompt = user_message
+        stream_summary = ""
 
         for _ in range(self.MAX_TOOL_ITERATIONS):
             result = self._call_api(prompt, streaming=False)
@@ -565,6 +676,8 @@ class Agent:
                 yield strip_thinking(message)
                 return
 
+            tool_calls = tool_calls[:1]
+
             result_parts, had_errors = self._execute_tools(tool_calls)
             tool_block = "\n\n".join(result_parts)
             used_ask_user = any(tc["name"] == "ask_user" for tc in tool_calls)
@@ -573,12 +686,15 @@ class Agent:
             elif used_ask_user:
                 suffix = _ask_user_note()
             else:
-                suffix = _completion_note()
+                suffix = _completion_note([tc["name"] for tc in tool_calls])
 
+            goal = f"[Task: {original_request}]"
+            if text_part.strip():
+                stream_summary = text_part.strip()
             prompt = (
-                f"{text_part}\n\n{tool_block}{suffix}"
-                if text_part
-                else f"{tool_block}{suffix}"
+                f"{goal}\n\n[Progress]: {stream_summary}\n\n{tool_block}{suffix}"
+                if stream_summary
+                else f"{goal}\n\n{tool_block}{suffix}"
             )
 
         yield "Reached maximum tool iterations without a final response."

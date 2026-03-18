@@ -81,6 +81,7 @@ def chat_stream(
 
     headers = _headers(accept="text/event-stream")
 
+    import logger as _logger
     with httpx.stream("POST", url, json=payload, headers=headers, timeout=120.0) as resp:
         resp.raise_for_status()
         for line in resp.iter_lines():
@@ -89,7 +90,9 @@ def chat_stream(
                 data_str = line[6:]
                 if data_str:
                     try:
-                        yield json.loads(data_str)
+                        chunk = json.loads(data_str)
+                        _logger._block("SSE CHUNK", str(chunk)) if _logger.is_enabled() else None
+                        yield chunk
                     except json.JSONDecodeError:
                         pass
 
@@ -188,27 +191,34 @@ def create_knowledge_source(
 def upload_file_to_ks(local_path: str, ks_slug: str) -> dict:
     """
     3-step upload flow:
-      1. POST /v2/file-upload/form  → get presigned URL + upload_id
-      2. PUT <presigned_url>        → upload the file bytes
-      3. POST /v1/file-upload/{id}/split  → process/embed
+      1. POST /v2/file-upload/form      → get presigned S3 form fields + upload_id
+      2. POST <s3_url> (multipart form) → upload the file with presigned fields
+      3. POST /v1/file-upload/{id}/split → process/embed
       Then poll /v1/file-upload/{id} until COMPLETED.
     """
     import os
 
     file_name = os.path.basename(local_path)
 
+    import logger
+    import json as _json
+
     # Step 1: request presigned form
+    _form_payload = {
+        "file_name": file_name,
+        "target_id": ks_slug,
+        "target_type": "KNOWLEDGE_SOURCE",
+        "expiration": 3600,
+    }
+    logger._block("KS UPLOAD step1 request", f"POST {DATA_BASE}/v2/file-upload/form\n{_json.dumps(_form_payload, indent=2)}")
+
     form_resp = httpx.post(
         f"{DATA_BASE}/v2/file-upload/form",
         headers=_headers(),
-        json={
-            "file_name": file_name,
-            "target_id": ks_slug,
-            "target_type": "KNOWLEDGE_SOURCE",
-            "expiration": 3600,
-        },
+        json=_form_payload,
         timeout=30.0,
     )
+    logger._block("KS UPLOAD step1 response", f"status={form_resp.status_code}\n{form_resp.text}")
     form_resp.raise_for_status()
     form_data = form_resp.json()
 
@@ -218,35 +228,32 @@ def upload_file_to_ks(local_path: str, ks_slug: str) -> dict:
         or form_data.get("id")
         or form_data.get("file_upload_id", "")
     )
+    # presigned S3 form fields (key, x-amz-*, policy, etc.)
+    fields: dict = form_data.get("form") or form_data.get("fields") or form_data.get("form_fields") or {}
+
+    logger._block("KS UPLOAD step1 parsed", f"upload_url={upload_url!r}\nupload_id={upload_id!r}\nfields keys={list(fields.keys())}")
 
     if not upload_url:
         raise RuntimeError(f"No upload URL in form response: {form_data}")
     if not upload_id:
         raise RuntimeError(f"No upload ID in form response: {form_data}")
 
-    # Step 2: upload the file
+    # Step 2: upload via multipart form POST to S3
     with open(local_path, "rb") as f:
         content = f.read()
 
-    put_resp = httpx.put(upload_url, content=content, timeout=120.0)
-    put_resp.raise_for_status()
+    # Build multipart: all presigned fields first, then the file
+    multipart_data = {k: (None, v) for k, v in fields.items()}
+    multipart_data["file"] = (file_name, content)
 
-    # Step 3: trigger split/embed
-    split_resp = httpx.post(
-        f"{DATA_BASE}/v1/file-upload/{upload_id}/split",
-        headers=_headers(),
-        json={
-            "split_overlap": 0,
-            "split_quantity": None,
-            "split_strategy": "SYNTACTIC",
-            "embed_after_split": True,
-        },
-        timeout=60.0,
-    )
-    split_resp.raise_for_status()
+    logger._block("KS UPLOAD step2 request", f"POST {upload_url}\nmultipart fields (excl. file): {[k for k in multipart_data if k != 'file']}\nfile size={len(content)} bytes")
+
+    s3_resp = httpx.post(upload_url, files=multipart_data, timeout=120.0)
+    logger._block("KS UPLOAD step2 response", f"status={s3_resp.status_code}\n{s3_resp.text[:2000]}")
+    s3_resp.raise_for_status()
 
     # Poll until done
-    for _ in range(30):
+    for i in range(30):
         time.sleep(3)
         poll = httpx.get(
             f"{DATA_BASE}/v1/file-upload/{upload_id}",
@@ -256,7 +263,8 @@ def upload_file_to_ks(local_path: str, ks_slug: str) -> dict:
         poll.raise_for_status()
         status = poll.json()
         state = status.get("status", "").upper()
-        if state in ("COMPLETED", "EMBEDDED", "DONE"):
+        logger._block(f"KS UPLOAD poll [{i+1}/30]", f"state={state!r}\n{_json.dumps(status, indent=2, default=str)}")
+        if state in ("COMPLETED", "EMBEDDED", "DONE", "INDEXED"):
             return status
         if state == "FAILED":
             raise RuntimeError(f"Upload processing failed: {status}")

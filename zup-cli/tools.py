@@ -22,7 +22,9 @@ def _resolve(path: str) -> str:
     return path
 
 
+
 def read_file(path: str) -> str:
+    """Read a file with line numbers."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
         return f"Error: file not found: {fpath}"
@@ -53,7 +55,15 @@ _FULL_REWRITE_THRESHOLD = 0.6  # if old_str covers ≥60% of file lines, do a fu
 
 def edit_file(path: str, old_str: str, new_str: str) -> str:
     fpath = _resolve(path)
+    # Allow creating new files by passing old_str=""
     if not os.path.exists(fpath):
+        if old_str == "":
+            parent = os.path.dirname(fpath)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(new_str)
+            return f"Created {fpath}"
         return f"Error: file not found: {fpath}"
     try:
         with open(fpath, "r", encoding="utf-8") as f:
@@ -86,38 +96,82 @@ def edit_file(path: str, old_str: str, new_str: str) -> str:
         return f"Error editing file: {e}"
 
 
-def list_files(path: str = ".", pattern: str = "**/*") -> str:
+def list_files(path: str = ".", pattern: str = "**/*", max_depth: int = 3) -> str:
+    """List files. Use specific patterns (e.g. '*.py', 'src/**/*.ts') to avoid huge outputs."""
     dpath = _resolve(path)
     if not os.path.exists(dpath):
         return f"Error: directory not found: {dpath}"
+
+    # Warn and limit depth for broad patterns to avoid token waste
+    is_broad = pattern in ("**/*", "**/.*", "*") or pattern == "**/*.*"
+    if is_broad:
+        hint = (
+            "TIP: Pattern '**/*' is very broad. "
+            "Use search_files(pattern='keyword') to find code, "
+            "or list_files(pattern='*.py') for a specific file type.\n"
+        )
+    else:
+        hint = ""
+
     try:
         matches = glob(os.path.join(dpath, pattern), recursive=True)
         entries = []
         for m in sorted(matches):
             rel = os.path.relpath(m, dpath)
+            # Enforce max_depth for broad patterns
+            if is_broad and rel.count(os.sep) >= max_depth:
+                continue
+            # Skip common noise dirs
+            parts = rel.replace("\\", "/").split("/")
+            skip = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+            if any(p in skip for p in parts):
+                continue
             if os.path.isdir(m):
                 entries.append(rel + "/")
             else:
                 entries.append(rel)
         if not entries:
-            return f"No entries found in {dpath} matching '{pattern}'"
-        # Cap at 300 to avoid huge outputs
-        truncated = entries[:300]
-        suffix = f"\n... ({len(entries) - 300} more)" if len(entries) > 300 else ""
-        return f"Files in {dpath}:\n" + "\n".join(truncated) + suffix
+            return f"{hint}No entries found in {dpath} matching '{pattern}'"
+        cap = 100 if is_broad else 300
+        truncated = entries[:cap]
+        more = len(entries) - cap
+        suffix = f"\n... ({more} more — use a specific pattern or search_files to narrow down)" if more > 0 else ""
+        return f"{hint}Files in {dpath}:\n" + "\n".join(truncated) + suffix
     except Exception as e:
         return f"Error listing files: {e}"
 
 
-def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
+def find_file(name: str, path: str = ".") -> str:
+    """Find files by name pattern (glob). Use this to locate files by name, not content."""
     dpath = _resolve(path)
-    SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
+    SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+    matches = []
+    for root, dirs, files in os.walk(dpath):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for fname in files:
+            if fnmatch.fnmatch(fname.lower(), name.lower()):
+                rel = os.path.relpath(os.path.join(root, fname), dpath).replace("\\", "/")
+                matches.append(rel)
+    if not matches:
+        return f"No file matching '{name}' found in {dpath}"
+    return f"Found {len(matches)} file(s) matching '{name}':\n" + "\n".join(matches[:50])
+
+
+def search_files(pattern: str, path: str = ".", file_glob: str = "*", context_lines: int = 1) -> str:
+    """Search file contents with a regex. Returns matching lines with context."""
+    dpath = _resolve(path)
+    SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
     try:
-        regex = re.compile(pattern)
+        regex = re.compile(pattern, re.IGNORECASE)
     except re.error as e:
         return f"Invalid regex: {e}"
 
-    results: list[str] = []
+    # Group results by file for readability
+    file_hits: dict[str, list[str]] = {}
+    total = 0
+    MAX_TOTAL = 150
+    MAX_FILES = 20
+
     try:
         for root, dirs, files in os.walk(dpath):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
@@ -127,22 +181,45 @@ def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
                 fpath = os.path.join(root, fname)
                 try:
                     with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                        for i, line in enumerate(f, 1):
-                            if regex.search(line):
-                                rel = os.path.relpath(fpath, dpath)
-                                results.append(f"{rel}:{i}: {line.rstrip()}")
-                                if len(results) >= 200:
-                                    break
+                        lines = f.readlines()
                 except OSError:
-                    pass
-            if len(results) >= 200:
+                    continue
+                rel = os.path.relpath(fpath, dpath).replace("\\", "/")
+                hits: list[str] = []
+                seen_lines: set[int] = set()
+                for i, line in enumerate(lines):
+                    if regex.search(line):
+                        # Collect context window
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        for j in range(start, end):
+                            if j not in seen_lines:
+                                marker = ">" if j == i else " "
+                                hits.append(f"  {marker} {j+1}: {lines[j].rstrip()}")
+                                seen_lines.add(j)
+                        hits.append("")  # separator between matches
+                        total += 1
+                        if total >= MAX_TOTAL:
+                            break
+                if hits:
+                    file_hits[rel] = hits
+                if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
+                    break
+            if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
                 break
     except Exception as e:
         return f"Error searching files: {e}"
 
-    if not results:
+    if not file_hits:
         return f"No matches for '{pattern}' in {dpath}"
-    return f"Matches for '{pattern}':\n" + "\n".join(results)
+
+    out = [f"Matches for '{pattern}' ({total} hits in {len(file_hits)} files):"]
+    for rel, hits in file_hits.items():
+        out.append(f"\n{rel}:")
+        out.extend(hits)
+    if total >= MAX_TOTAL:
+        out.append(f"\n... truncated at {MAX_TOTAL} matches. Narrow your search pattern.")
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------

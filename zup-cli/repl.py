@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import re
+import threading
 
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.lexers import Lexer
@@ -25,7 +26,6 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/reset",            "/reset",                   "Start a new conversation (new ID)"),
     ("/debug",            "/debug",                   "Show debug log path"),
     ("/cwd",              "/cwd [path]",               "Show or change working directory"),
-    ("/model",            "/model",                   "List or switch LLM model interactively"),
     ("/agent",            "/agent",                   "List or switch AI agent interactively"),
     ("/ks list",          "/ks list [page] [size]",    "List knowledge sources"),
     ("/ks objects",       "/ks objects <slug> [page]", "List objects in a knowledge source"),
@@ -99,131 +99,6 @@ class ZupLexer(Lexer):
 
 HISTORY_FILE = Path.home() / ".zup-cli" / "history"
 
-
-def _pick_model(current_id: Optional[str]) -> Optional[tuple[str, str]]:
-    """
-    Show an interactive arrow-key selection list of available models.
-    Returns the selected model ID, or None if cancelled.
-    """
-    from prompt_toolkit.application import Application
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout
-    from prompt_toolkit.layout.containers import HSplit, Window
-    from prompt_toolkit.layout.controls import FormattedTextControl
-    from prompt_toolkit.styles import Style as PTStyle
-    from rich.console import Console
-
-    con = Console()
-
-    try:
-        from api_client import list_models
-        raw = list_models()
-    except Exception as e:
-        display.print_error(f"Could not fetch models: {e}")
-        return None
-
-    # Normalise to list
-    if isinstance(raw, dict):
-        items = (
-            raw.get("items") or raw.get("data") or
-            raw.get("models") or raw.get("content") or []
-        )
-    else:
-        items = raw if isinstance(raw, list) else []
-
-    if not items:
-        display.print_info("No models available.")
-        return None
-
-    # Build (id, display_name) pairs
-    entries: list[tuple[str, str]] = []
-    for m in items:
-        mid = (
-            m.get("id") or m.get("model_id") or
-            m.get("modelId") or m.get("slug") or ""
-        )
-        mname = (
-            m.get("display_name") or m.get("displayName") or
-            m.get("name") or m.get("title") or mid
-        )
-        if mid:
-            entries.append((mid, mname))
-
-    if not entries:
-        display.print_info("No selectable models found.")
-        return None
-
-    state = {"index": 0, "result": None, "done": False}
-    # Start cursor on current model if any
-    if current_id:
-        for i, (mid, _) in enumerate(entries):
-            if mid == current_id:
-                state["index"] = i
-                break
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    @kb.add("k")
-    def _up(event):
-        state["index"] = (state["index"] - 1) % len(entries)
-
-    @kb.add("down")
-    @kb.add("j")
-    def _down(event):
-        state["index"] = (state["index"] + 1) % len(entries)
-
-    @kb.add("enter")
-    def _select(event):
-        state["result"] = entries[state["index"]]  # (id, display_name)
-        state["done"] = True
-        event.app.exit()
-
-    @kb.add("c-c")
-    @kb.add("escape")
-    @kb.add("q")
-    def _cancel(event):
-        state["done"] = True
-        event.app.exit()
-
-    def _get_text():
-        lines = [("class:title", " Select model  ↑/↓ or j/k · Enter to confirm · Esc to cancel\n\n")]
-        for i, (mid, mname) in enumerate(entries):
-            selected = i == state["index"]
-            marker = "  ● " if selected else "  ○ "
-            cursor = "class:selected" if selected else "class:item"
-            current = "class:current" if mid == current_id else ""
-            tag = " [current]" if mid == current_id else ""
-            lines.append((cursor, marker))
-            lines.append((cursor, mname))
-            if current:
-                lines.append((current, tag))
-            lines.append(("", f"   {mid}\n" if not selected else f"   {mid}\n"))
-        return lines
-
-    style = PTStyle.from_dict({
-        "title":    "bold cyan",
-        "selected": "bold white reverse",
-        "item":     "",
-        "current":  "dim green",
-    })
-
-    layout = Layout(
-        HSplit([
-            Window(content=FormattedTextControl(_get_text, focusable=True)),
-        ])
-    )
-
-    app: Application = Application(
-        layout=layout,
-        key_bindings=kb,
-        style=style,
-        full_screen=False,
-        mouse_support=False,
-    )
-    app.run()
-
-    return state["result"]
 
 
 def _pick_agent(current_id: Optional[str]) -> Optional[tuple[str, str]]:
@@ -406,8 +281,10 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
                     preview_tokens.append(("class:diff_add", f"  + {ln}\n"))
                 for i in range(end_line, ctx_end):
                     preview_tokens.append(("class:diff_ctx", f"    {all_lines[i]}\n"))
-        except Exception:
-            pass
+        except FileNotFoundError:
+            preview_tokens.append(("class:diff_remove", f"  ✖ file not found: {fpath}\n"))
+        except Exception as _e:
+            preview_tokens.append(("class:diff_remove", f"  ✖ could not read file: {_e}\n"))
     elif name == "bash":
         cmd = parameters.get("command", "?")
         preview_lines = [f"  Run command:", f"    {cmd}"]
@@ -563,7 +440,6 @@ HELP_TEXT = """
   /reset                        Start a new conversation (generates a new ID)
   /debug                        Show debug log path (start with --debug to enable)
   /cwd [path]                   Show or change working directory
-  /model                        List or switch available AI models
   /agent                        List or switch available AI agents
   /ks list [page] [size]        List knowledge sources
   /ks objects <slug> [page]     List objects inside a knowledge source
@@ -627,16 +503,6 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
     if head in ("/exit", "/quit", "/q"):
         display.print_info("Goodbye!")
         sys.exit(0)
-
-    if head == "/model":
-        chosen = _pick_model(agent.selected_model)
-        if chosen:
-            model_id, model_name = chosen
-            agent.set_model(model_id, model_name)
-            display.print_info(f"Model set to: {model_name}")
-        else:
-            display.print_info("No model selected.")
-        return True
 
     if head == "/agent":
         chosen = _pick_agent(agent.selected_agent_id)
@@ -741,8 +607,8 @@ def _process(message: str, agent: Agent):
     _orig_tool_result = agent.on_tool_result
     _orig_confirm     = agent.on_confirm_tool
 
-    def _on_llm_start():
-        display.stream_start()
+    def _on_llm_start(in_chars: int = 0):
+        display.stream_start(in_chars=in_chars)
 
     def _on_llm_chunk(text: str):
         display.stream_chunk(text)
@@ -773,9 +639,18 @@ def _process(message: str, agent: Agent):
             return True
         return _orig_confirm(name, params)
 
-    _orig_llm_start   = agent.on_llm_start
-    _orig_llm_chunk   = agent.on_llm_chunk
-    _orig_token_count = agent.on_token_count
+    def _on_llm_activity(content: str):
+        def _fetch():
+            from agent import get_activity_hint
+            hint = get_activity_hint(content)
+            if hint and display._stream_view is not None:
+                display._stream_view.hint = hint
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    _orig_llm_start    = agent.on_llm_start
+    _orig_llm_chunk    = agent.on_llm_chunk
+    _orig_token_count  = agent.on_token_count
+    _orig_llm_activity = agent.on_llm_activity
 
     agent.on_llm_start    = _on_llm_start
     agent.on_llm_chunk    = _on_llm_chunk
@@ -784,6 +659,7 @@ def _process(message: str, agent: Agent):
     agent.on_tool_use     = _on_tool_use
     agent.on_tool_result  = _on_tool_result
     agent.on_confirm_tool = _on_confirm
+    agent.on_llm_activity = _on_llm_activity
     # -----------------------------------------------------------------------
 
     try:
@@ -813,6 +689,7 @@ def _process(message: str, agent: Agent):
         agent.on_tool_use     = _orig_tool_use
         agent.on_tool_result  = _orig_tool_result
         agent.on_confirm_tool = _orig_confirm
+        agent.on_llm_activity = _orig_llm_activity
 
 
 def start_repl(initial_prompt: Optional[str] = None):
@@ -836,7 +713,7 @@ def start_repl(initial_prompt: Optional[str] = None):
         on_confirm_tool=_confirm_tool,
     )
 
-    display.print_welcome(model_name=agent.selected_model_name)
+    display.print_welcome()
     display.print_info(f"Authenticated ✓  |  conversation: {agent.conversation_id}\n")
 
     import logger
@@ -864,14 +741,11 @@ def start_repl(initial_prompt: Optional[str] = None):
     while True:
         try:
             cwd_short = os.path.basename(os.getcwd()) or os.getcwd()
-            model_tag = (
-                f" [{agent.selected_model_name}]" if agent.selected_model_name else ""
-            )
             agent_tag = (
                 f" ({agent.selected_agent_name})" if agent.selected_agent_name else ""
             )
             user_input = session.prompt(
-                [("class:prompt", f"{cwd_short}{model_tag}{agent_tag}> ")]
+                [("class:prompt", f"{cwd_short}{agent_tag}> ")]
             ).strip()
         except KeyboardInterrupt:
             print()

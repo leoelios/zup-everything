@@ -29,10 +29,10 @@ class _StreamingView:
     _FRAMES = ["✻", "✼", "✽", "✾", "✽", "✼"]
     _PREVIEW_LINES = 5
 
-    def __init__(self) -> None:
+    def __init__(self, in_chars: int = 0) -> None:
         self.text = ""
-        self.in_tokens = 0
-        self.out_tokens = 0
+        self.hint = ""
+        self.in_chars = in_chars
         self._start = time.monotonic()
         self._tick = 0
 
@@ -40,16 +40,18 @@ class _StreamingView:
         frame = self._FRAMES[self._tick % len(self._FRAMES)]
         self._tick += 1
         elapsed = _fmt_elapsed(time.monotonic() - self._start)
+        out_chars = len(self.text)
 
         header = Text()
         header.append(f"{frame} ", style="bold yellow")
-        header.append("Generating…", style="bold white")
-        header.append(f" ({elapsed})", style="dim")
-        if self.out_tokens:
-            header.append(
-                f"  [in:{self.in_tokens} out:{self.out_tokens}]",
-                style="dim cyan",
-            )
+        header.append("Generating: " + self.hint + "..." if self.hint else "Generating...", style="bold white")
+        if self.in_chars and not out_chars:
+            token_part = f" · ↑{self.in_chars}"
+        elif out_chars:
+            token_part = f" · ↑{self.in_chars} ↓{out_chars}"
+        else:
+            token_part = ""
+        header.append(f" ({elapsed}{token_part})", style="dim")
         yield header
 
         if self.text:
@@ -58,6 +60,7 @@ class _StreamingView:
 
 
 _stream_view: _StreamingView | None = None
+_last_tokens: tuple[int, int] = (0, 0)  # (input, output) from last stream
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -116,11 +119,11 @@ def spinner_stop() -> None:
     _stop_live()
 
 
-def stream_start() -> None:
+def stream_start(in_chars: int = 0) -> None:
     """Begin a live streaming view (replaces spinner during LLM generation)."""
     global _live, _stream_view
     _stop_live()
-    _stream_view = _StreamingView()
+    _stream_view = _StreamingView(in_chars=in_chars)
     _live = Live(
         _stream_view,
         console=console,
@@ -137,20 +140,20 @@ def stream_chunk(text: str) -> None:
 
 
 def stream_tokens(input_tokens: int, output_tokens: int) -> None:
-    """Update the token counters in the live view."""
-    if _stream_view is not None:
-        _stream_view.in_tokens = input_tokens
-        _stream_view.out_tokens = output_tokens
+    """No-op kept for API compatibility — chars are counted locally."""
+    pass
 
 
 def stream_stop() -> None:
     """Stop the streaming live view."""
-    global _stream_view
+    global _stream_view, _last_tokens
+    if _stream_view is not None:
+        _last_tokens = (_stream_view.in_chars, len(_stream_view.text))
     _stop_live()
     _stream_view = None
 
 
-def print_welcome(model_name: str | None = None):
+def print_welcome():
     import getpass
     import os
     from pathlib import Path
@@ -196,22 +199,15 @@ def print_welcome(model_name: str | None = None):
     right.append("Enter", style="bold dim")
     right.append(" to chat with the AI\n", style="dim")
     right.append("  Use ", style="dim")
-    right.append("/model", style="bold dim")
-    right.append(" or ", style="dim")
     right.append("/agent", style="bold dim")
-    right.append(" to switch AI settings\n", style="dim")
+    right.append(" to switch AI agent\n", style="dim")
     right.append("  Use ", style="dim")
     right.append("/ks", style="bold dim")
     right.append(" to manage knowledge sources\n", style="dim")
     right.append("\u2500" * 44 + "\n", style="dim")
     right.append(f"\nWelcome back {username}!\n", style="bold white")
-    meta_parts = []
-    if model_name:
-        meta_parts.append(model_name)
     if realm:
-        meta_parts.append(realm)
-    if meta_parts:
-        right.append(" · ".join(meta_parts) + "\n", style="dim")
+        right.append(realm + "\n", style="dim")
     right.append(cwd + "\n", style="dim")
 
     # ── Two-column grid ───────────────────────────────────────────────────────
@@ -286,3 +282,6 @@ def print_info(message: str):
 
 def print_separator() -> None:
     console.print(Rule(style="dim"))
+    in_t, out_t = _last_tokens
+    if out_t:
+        console.print(f"[dim]  ↑{in_t} ↓{out_t}[/dim]")
