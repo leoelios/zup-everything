@@ -393,8 +393,12 @@ Parameters must be valid JSON with double-quoted keys and string values.
 # Agent class
 # ---------------------------------------------------------------------------
 
+_RESULT_CONTENT_RE = re.compile(r"<content>(.*?)</content>", re.DOTALL)
+
+
 class Agent:
     MAX_TOOL_ITERATIONS = 15
+    MAX_CONTINUATION_ITERATIONS = 10
 
     # Tools that mutate the filesystem or run shell commands — require user confirmation
     CONFIRM_TOOLS = {"edit_file", "bash"}
@@ -646,28 +650,39 @@ class Agent:
                 had_errors = True
         return parts, had_errors
 
-    def run(self, user_message: str) -> str:
+    def _agent_loop(
+        self,
+        original_request: str,
+        initial_prompt: str,
+        max_iterations: int,
+        execution_log: list[str],
+        context_summary: str = "",
+    ) -> tuple[str | None, str, list[str]]:
         """
-        Agent loop with chain-of-thought and self-correction (streaming internally).
-        Returns the final text response.
+        Core agent loop. Runs up to max_iterations tool-call cycles.
+        Returns (final_response | None, last_context_summary, updated_execution_log).
+        None means the loop exhausted its iterations without a final answer.
         """
-        original_request = user_message
-        prompt = user_message
-        context_summary = ""
+        prompt = initial_prompt
 
-        for _ in range(self.MAX_TOOL_ITERATIONS):
+        for _ in range(max_iterations):
             message, _tokens = self._stream_collect(prompt)
-
             tool_calls, text_part = self._process_response(message)
 
             if not tool_calls:
-                return strip_thinking(message)
+                return strip_thinking(message), context_summary, execution_log
 
             # Execute only the FIRST tool call per iteration — forces step-by-step execution
-            # and prevents the model from planning+executing everything at once (hallucination risk).
+            # and prevents the model from planning+executing everything at once.
             tool_calls = tool_calls[:1]
-
             result_parts, had_errors = self._execute_tools(tool_calls)
+
+            # Record what was actually executed for continuation context
+            for tc, rp in zip(tool_calls, result_parts):
+                m = _RESULT_CONTENT_RE.search(rp)
+                result_preview = (m.group(1).strip()[:200] if m else "")
+                execution_log.append(f"• {tc['name']}: {result_preview}")
+
             tool_block = "\n\n".join(result_parts)
             used_ask_user = any(tc["name"] == "ask_user" for tc in tool_calls)
             if had_errors:
@@ -678,8 +693,6 @@ class Agent:
                 suffix = _completion_note([tc["name"] for tc in tool_calls])
 
             goal = f"[Task: {original_request}]"
-            # Rolling context: keep model's latest synthesis but discard old raw tool results.
-            # This prevents the prompt from growing unboundedly across iterations.
             if text_part.strip():
                 context_summary = text_part.strip()
             prompt = (
@@ -688,7 +701,51 @@ class Agent:
                 else f"{goal}\n\n{tool_block}{suffix}"
             )
 
-        return "Reached maximum tool iterations without a final response."
+        return None, context_summary, execution_log
+
+    def run(self, user_message: str) -> str:
+        """
+        Agent loop with chain-of-thought and self-correction (streaming internally).
+        If MAX_TOOL_ITERATIONS is hit, automatically continues with full execution context.
+        Returns the final text response.
+        """
+        execution_log: list[str] = []
+
+        result, context_summary, execution_log = self._agent_loop(
+            original_request=user_message,
+            initial_prompt=user_message,
+            max_iterations=self.MAX_TOOL_ITERATIONS,
+            execution_log=execution_log,
+        )
+
+        if result is not None:
+            return result
+
+        # Hit the iteration limit — build a continuation prompt with the real execution history
+        done_summary = "\n".join(execution_log) if execution_log else "  (no tools executed)"
+        continuation_prompt = (
+            f"[Task: {user_message}]\n\n"
+            f"<system_note>\n"
+            f"You hit the iteration limit mid-task. Here is what was ACTUALLY executed so far:\n"
+            f"{done_summary}\n\n"
+            f"Your last recorded progress: {context_summary or '(none)'}\n\n"
+            f"Resume the task from exactly where it stopped. Do NOT repeat anything already done above.\n"
+            f"If the task is already complete based on what was done, provide your final response now.\n"
+            f"</system_note>"
+        )
+
+        result, _, _ = self._agent_loop(
+            original_request=user_message,
+            initial_prompt=continuation_prompt,
+            max_iterations=self.MAX_CONTINUATION_ITERATIONS,
+            execution_log=execution_log,
+            context_summary=context_summary,
+        )
+
+        return result if result is not None else (
+            "Task incomplete after extended iterations. "
+            "Review what was done and continue manually if needed."
+        )
 
     def stream(self, user_message: str) -> Generator[str, None, None]:
         """Streaming-compatible agent loop (tool turns are non-streaming)."""

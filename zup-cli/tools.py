@@ -385,7 +385,8 @@ def ask_user(question: str, options: list) -> str:
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.styles import Style as PTStyle
 
-    agent_opts = [str(o) for o in list(options)[:3]]
+    _prefix_re = re.compile(r"^[a-zA-Z0-9]+[).]\s*")
+    agent_opts = [_prefix_re.sub("", str(o), count=1) for o in list(options)[:3]]
     all_opts   = agent_opts + ["Other... (type freely)"]
     labels     = _LABELS[:len(all_opts)]
 
