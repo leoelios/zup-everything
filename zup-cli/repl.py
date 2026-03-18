@@ -47,11 +47,13 @@ _MODIFIER_COMPLETIONS: list[tuple[str, str, str]] = [
     ("@insecure", "@insecure <prompt>", "Auto-accept all actions without confirmation"),
 ]
 
-# Regex to find an @-token being typed immediately before the cursor
-_AT_TOKEN_RE = re.compile(r"@(\w*)$")
+# Regex to find an @-token being typed immediately before the cursor.
+# Only triggers when @ is preceded by whitespace or is at the start.
+_AT_TOKEN_RE = re.compile(r"(?<!\S)@(\w*)$")
 
-# Regex to split a line into @-modifier tokens vs plain text (for the lexer)
-_MODIFIER_SPLIT_RE = re.compile(r"(@\w+)")
+# Regex to split a line into @-modifier tokens vs plain text (for the lexer).
+# Only matches @ preceded by whitespace or start-of-string.
+_MODIFIER_SPLIT_RE = re.compile(r"(?<!\S)(@\w+)")
 
 
 class ZupCompleter(Completer):

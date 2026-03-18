@@ -10,13 +10,15 @@ import re
 import concurrent.futures
 from typing import Optional
 
-# Matches @word tokens anywhere in the prompt
-MODIFIER_RE = re.compile(r'@(\w+)\b', re.IGNORECASE)
+# Matches @word tokens preceded by whitespace or start-of-string (not inside words/emails)
+MODIFIER_RE = re.compile(r'(?<!\S)@(\w+)\b', re.IGNORECASE)
 
 
 def extract_modifiers(prompt: str) -> tuple[list[str], str]:
     """
     Extract @modifier tokens from a prompt.
+    Tokens inside double-quoted strings are ignored (e.g. "user@host.com").
+    A valid modifier must be preceded by whitespace or appear at the start.
     Returns (list_of_modifier_names_lowercased, prompt_with_modifiers_removed).
     """
     found: list[str] = []
@@ -25,7 +27,17 @@ def extract_modifiers(prompt: str) -> tuple[list[str], str]:
         found.append(m.group(1).lower())
         return ''
 
-    clean = MODIFIER_RE.sub(_collect, prompt).strip()
+    # Split on double-quoted strings; only process unquoted segments.
+    # re.split with a capturing group keeps the quoted parts in the result at odd indices.
+    segments = re.split(r'("(?:[^"\\]|\\.)*")', prompt)
+    clean_parts = []
+    for i, segment in enumerate(segments):
+        if i % 2 == 1:      # inside quotes — leave untouched
+            clean_parts.append(segment)
+        else:               # outside quotes — extract modifiers
+            clean_parts.append(MODIFIER_RE.sub(_collect, segment))
+
+    clean = ''.join(clean_parts).strip()
     return found, clean
 
 
