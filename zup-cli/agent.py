@@ -535,7 +535,7 @@ class Agent:
                     _hint_fired = True
                     self.on_llm_activity(full_message)
 
-            stop_val = chunk.get("stop_reason") or chunk.get("finish_reason")
+            stop_val = chunk.get("finish_reason")
             if stop_val and stop_val != "tool_use":
                 if not self._initialized:
                     self._initialized = True
