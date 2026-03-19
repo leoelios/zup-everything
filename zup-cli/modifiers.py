@@ -194,11 +194,224 @@ def run_multi(prompt: str, agent) -> str:
 
 
 # ---------------------------------------------------------------------------
+# @auto modifier
+# ---------------------------------------------------------------------------
+
+_AUTO_ORCHESTRATOR_SYSTEM = """\
+You are an autonomous task orchestrator controlling an AI coding assistant.
+The assistant needs your guidance to complete a task without any user input.
+
+Given the original task, recent progress, and a question from the agent, respond
+with the best answer to move the task forward.
+
+Rules:
+- Be decisive — pick the best option for completing the original task.
+- If given a list of options, choose one by its exact text.
+- If asked for free-form input, provide a clear and concise answer.
+- Never ask for clarification — always make the best decision.
+- Keep your answer short and actionable.
+"""
+
+_AUTO_EVAL_SYSTEM = """\
+Evaluate whether the following coding task has been fully completed based on the
+agent's final response. Output ONLY one of:
+- "COMPLETE"   — the task is fully done with no remaining steps.
+- "INCOMPLETE" — the task is not done or only partially done.
+"""
+
+
+def run_auto(prompt: str, agent) -> str:
+    """
+    @auto modifier — autonomous orchestrator that drives the existing agent to
+    completion without any user interaction.
+
+    Behaviour:
+    - Streams LLM output, tool calls and results live (same as normal mode).
+    - Auto-accepts all tool confirmations (same as @insecure).
+    - Intercepts ask_user calls, shows the question + options, and answers via LLM.
+    - Evaluates task completion after each agent run and continues if needed.
+    """
+    import threading
+    import display
+    from agent import Agent, get_activity_hint
+    import agent as agent_module
+    from api_client import chat_nonstream
+
+    MAX_AUTO_ITERATIONS = 5
+
+    display.print_info("[@auto] Autonomous mode — no user input required.")
+
+    history: list[str] = []
+
+    # ── Orchestrator: answers ask_user questions via LLM ─────────────────────
+    def _orchestrate(question: str, options: list) -> str:
+        display.stream_stop()
+        display.spinner_stop()
+
+        display.print_info(f"[@auto] Agent is asking: {question}")
+        for i, o in enumerate(options):
+            display.print_info(f"  {i + 1}. {o}")
+        display.print_info("[@auto] Orchestrator deciding…")
+
+        opts_lines = "\n".join(f"  {i + 1}. {o}" for i, o in enumerate(options)) if options else ""
+        history_str = "\n".join(history[-5:]) if history else "None"
+
+        full_prompt = (
+            f"{_AUTO_ORCHESTRATOR_SYSTEM}\n\n"
+            f"Original task: {prompt}\n\n"
+            f"Recent progress:\n{history_str}\n\n"
+            f"The agent is asking: {question}\n"
+            + (f"Options:\n{opts_lines}\n\n" if opts_lines else "\n")
+            + "Your answer:"
+        )
+        try:
+            result = chat_nonstream(
+                full_prompt,
+                conversation_id=agent.conversation_id + "-auto-orch",
+                agent_id=agent.selected_agent_id,
+                selected_model=agent.selected_model,
+            )
+            answer = result.get("message", "").strip()
+        except Exception:
+            answer = options[0] if options else "yes"
+
+        display.print_info(f"[@auto] Orchestrator chose: {answer!r}")
+        history.append(f"Agent asked: {question!r} → answered: {answer!r}")
+        return answer
+
+    # ── Completion evaluator ──────────────────────────────────────────────────
+    def _is_complete(task: str, response: str) -> bool:
+        full_prompt = (
+            f"{_AUTO_EVAL_SYSTEM}\n\n"
+            f"Task: {task}\n\n"
+            f"Agent's final response:\n{response}"
+        )
+        try:
+            result = chat_nonstream(
+                full_prompt,
+                conversation_id=agent.conversation_id + "-auto-eval",
+                agent_id=agent.selected_agent_id,
+                selected_model=agent.selected_model,
+            )
+            verdict = result.get("message", "").strip().upper()
+            return verdict.startswith("COMPLETE")
+        except Exception:
+            return True  # assume complete on error
+
+    # ── Patch ask_user in the global tool registry ────────────────────────────
+    original_ask_user = agent_module.TOOL_REGISTRY.get("ask_user")
+    agent_module.TOOL_REGISTRY["ask_user"] = _orchestrate
+
+    try:
+        # ── Display callbacks (same wiring as repl._process) ─────────────────
+        def _on_llm_start(in_chars: int = 0):
+            display.stream_start(in_chars=in_chars)
+
+        def _on_llm_chunk(text: str):
+            display.stream_chunk(text)
+
+        def _on_token_count(in_t: int, out_t: int):
+            display.stream_tokens(in_t, out_t)
+
+        def _on_thinking(text: str):
+            display.stream_stop()
+            display.print_thinking(text)
+            display.stream_start()
+
+        def _on_tool_use(name: str, params: dict):
+            display.stream_stop()
+            display.print_tool_use(name, params)
+            if name != "ask_user":
+                display.spinner_start(f"Running {name}…", status=name)
+
+        def _on_tool_result(name: str, result: str):
+            if name != "ask_user":
+                display.spinner_stop()
+            display.print_tool_result(name, result)
+
+        def _on_bash_output(line: str, is_stderr: bool = False):
+            display.bash_output(line, is_stderr)
+
+        def _on_llm_activity(content: str):
+            def _fetch():
+                hint = get_activity_hint(content)
+                if hint and display._stream_view is not None:
+                    display._stream_view.hint = hint
+                    if not display._stream_view.activities or display._stream_view.activities[-1] != hint:
+                        display._stream_view.activities.append(hint)
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        # Single persistent worker with insecure mode (auto-accept all tools)
+        worker = Agent(on_confirm_tool=lambda n, p: True)
+        worker.selected_model      = agent.selected_model
+        worker.selected_model_name = agent.selected_model_name
+        worker.selected_agent_id   = agent.selected_agent_id
+        worker.selected_agent_name = agent.selected_agent_name
+        worker.on_llm_start    = _on_llm_start
+        worker.on_llm_chunk    = _on_llm_chunk
+        worker.on_token_count  = _on_token_count
+        worker.on_thinking     = _on_thinking
+        worker.on_tool_use     = _on_tool_use
+        worker.on_tool_result  = _on_tool_result
+        worker.on_bash_output  = _on_bash_output
+        worker.on_llm_activity = _on_llm_activity
+
+        last_response = ""
+        current_prompt = prompt
+
+        for iteration in range(MAX_AUTO_ITERATIONS):
+            display.print_info(f"[@auto] Iteration {iteration + 1}/{MAX_AUTO_ITERATIONS}…")
+            if iteration > 0:
+                display.print_info(f"[@auto] Sending to agent: {current_prompt[:200]}…")
+
+            try:
+                response = worker.run(current_prompt)
+            except Exception as e:
+                display.stream_stop()
+                display.print_info(f"[@auto] Agent error: {e}")
+                break
+
+            display.stream_stop()
+            last_response = response
+            history.append(f"Iteration {iteration + 1}: {response[:300]}")
+
+            # Show intermediate responses so the user can follow progress
+            display.print_separator()
+            display.print_response(response)
+
+            if _is_complete(prompt, response):
+                display.print_info("[@auto] Task completed successfully.")
+                # Return empty string — response was already printed above
+                return ""
+
+            display.print_info("[@auto] Task not yet complete — continuing…")
+            current_prompt = (
+                f"[Original task: {prompt}]\n\n"
+                f"Your last response was:\n{response}\n\n"
+                f"The task is not yet fully complete. "
+                f"Continue from where you left off and finish it."
+            )
+
+        display.print_info("[@auto] Max iterations reached.")
+        # Last response already printed in the loop
+        return ""
+
+    finally:
+        display.stream_stop()
+        display.spinner_stop()
+        if original_ask_user is not None:
+            agent_module.TOOL_REGISTRY["ask_user"] = original_ask_user
+        elif "ask_user" in agent_module.TOOL_REGISTRY:
+            del agent_module.TOOL_REGISTRY["ask_user"]
+
+
+# ---------------------------------------------------------------------------
 # Modifier dispatch table — add new @modifiers here
 # ---------------------------------------------------------------------------
 
 MODIFIERS: dict[str, callable] = {
     "multi": run_multi,
+    "auto":  run_auto,
 }
 
 # ---------------------------------------------------------------------------

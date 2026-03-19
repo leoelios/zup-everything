@@ -45,6 +45,7 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
 _MODIFIER_COMPLETIONS: list[tuple[str, str, str]] = [
     ("@multi",    "@multi <prompt>",    "Split task into parallel subtasks and merge results"),
     ("@insecure", "@insecure <prompt>", "Auto-accept all actions without confirmation"),
+    ("@auto",     "@auto <prompt>",     "Autonomous orchestrator — completes task with no user input"),
 ]
 
 # Regex to find an @-token being typed immediately before the cursor.
@@ -293,6 +294,47 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
             preview_tokens.append(("class:diff_remove", f"  ✖ file not found: {fpath}\n"))
         except Exception as _e:
             preview_tokens.append(("class:diff_remove", f"  ✖ could not read file: {_e}\n"))
+    elif name == "replace_lines":
+        import os as _os
+        path = parameters.get("path", "?")
+        start_line = parameters.get("start_line", "?")
+        end_line = parameters.get("end_line", "?")
+        new_content = parameters.get("new_content", "")
+        added = len(new_content.splitlines())
+        removed = (end_line - start_line + 1) if isinstance(start_line, int) and isinstance(end_line, int) else "?"
+        preview_tokens = [
+            ("class:title", f"\n  ● Update({path})\n"),
+            ("class:preview", f"  ⎿  Replace lines {start_line}-{end_line} → {added} new lines\n\n"),
+        ]
+        try:
+            fpath = _os.path.join(_os.getcwd(), path) if not _os.path.isabs(path) else path
+            with open(fpath, "r", encoding="utf-8", errors="replace") as _f:
+                all_lines = _f.readlines()
+            if isinstance(start_line, int) and isinstance(end_line, int):
+                ctx_start = max(0, start_line - 4)
+                ctx_end = min(len(all_lines), end_line + 2)
+                for i in range(ctx_start, start_line - 1):
+                    preview_tokens.append(("class:diff_ctx", f"    {all_lines[i].rstrip()}\n"))
+                for i in range(start_line - 1, min(end_line, len(all_lines))):
+                    preview_tokens.append(("class:diff_remove", f"  - {all_lines[i].rstrip()}\n"))
+                for ln in new_content.splitlines():
+                    preview_tokens.append(("class:diff_add", f"  + {ln}\n"))
+                for i in range(end_line, ctx_end):
+                    preview_tokens.append(("class:diff_ctx", f"    {all_lines[i].rstrip()}\n"))
+        except Exception:
+            pass
+    elif name == "insert_after_line":
+        import os as _os
+        path = parameters.get("path", "?")
+        line_number = parameters.get("line_number", "?")
+        new_content = parameters.get("new_content", "")
+        added = len(new_content.splitlines())
+        preview_tokens = [
+            ("class:title", f"\n  ● Insert({path})\n"),
+            ("class:preview", f"  ⎿  Insert {added} lines after line {line_number}\n\n"),
+        ]
+        for ln in new_content.splitlines():
+            preview_tokens.append(("class:diff_add", f"  + {ln}\n"))
     elif name == "bash":
         cmd = parameters.get("command", "?")
         preview_lines = [f"  Run command:", f"    {cmd}"]
@@ -394,9 +436,21 @@ def _confirm_tool(name: str, parameters: dict) -> bool:
         full_screen=False,
         mouse_support=False,
     )
-    app.run()
+    try:
+        app.run()
+    except Exception:
+        pass
 
     choice = state["result"]
+
+    # App exited without user input (terminal state issue after Live renderer) — fallback
+    if choice is None:
+        try:
+            raw = input("  Confirm action? [y/n]: ").strip().lower()
+            choice = "Accept" if raw in ("y", "yes", "a") else "Decline"
+        except (KeyboardInterrupt, EOFError):
+            choice = "Decline"
+
     if choice == "Accept":
         return True
     if choice == "Decline and type reason":
@@ -869,6 +923,8 @@ def _process(message: str, agent: Agent):
             hint = get_activity_hint(content)
             if hint and display._stream_view is not None:
                 display._stream_view.hint = hint
+                if not display._stream_view.activities or display._stream_view.activities[-1] != hint:
+                    display._stream_view.activities.append(hint)
         threading.Thread(target=_fetch, daemon=True).start()
 
     _orig_llm_start    = agent.on_llm_start

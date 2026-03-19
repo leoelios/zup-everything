@@ -27,11 +27,13 @@ class _StreamingView:
     """Live renderable that shows a rolling preview of streamed tokens + token count."""
 
     _FRAMES = ["✻", "✼", "✽", "✾", "✽", "✼"]
-    _PREVIEW_LINES = 5
+    _ACTIVITY_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    _MAX_ACTIVITIES = 4
 
     def __init__(self, in_chars: int = 0) -> None:
         self.text = ""
         self.hint = ""
+        self.activities: list[str] = []
         self.in_chars = in_chars
         self._start = time.monotonic()
         self._tick = 0
@@ -44,7 +46,7 @@ class _StreamingView:
 
         header = Text()
         header.append(f"{frame} ", style="bold yellow")
-        header.append("Generating: " + self.hint + "..." if self.hint else "Generating...", style="bold white")
+        header.append("Generating...", style="bold white")
         def _fmt_tokens(n: int) -> str:
             if n >= 1000:
                 return f"{n / 1000:.1f}k".replace(".0k", "k")
@@ -59,9 +61,17 @@ class _StreamingView:
         header.append(f" ({elapsed}{token_part})", style="dim")
         yield header
 
-        if self.text:
-            tail = self.text[-450:].replace("\n", " ").strip()
-            yield Text("  " + tail, style="color(8)", overflow="fold")
+        visible = self.activities[-self._MAX_ACTIVITIES:]
+        for i, activity in enumerate(visible):
+            is_current = i == len(visible) - 1
+            t = Text("  ")
+            if is_current:
+                spin = self._ACTIVITY_SPINNER[self._tick % len(self._ACTIVITY_SPINNER)]
+                t.append(spin, style="bold cyan")
+            else:
+                t.append("●", style="bold green")
+            t.append(f" {activity}", style="dim" if not is_current else "white")
+            yield t
 
 
 _stream_view: _StreamingView | None = None

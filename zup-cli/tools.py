@@ -23,16 +23,23 @@ def _resolve(path: str) -> str:
 
 
 
-def read_file(path: str) -> str:
-    """Read a file with line numbers."""
+def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
+    """Read a file with line numbers. Use start_line/end_line to read a specific range."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
         return f"Error: file not found: {fpath}"
     try:
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        numbered = "".join(f"{i+1:6}\t{line}" for i, line in enumerate(lines))
-        return f"File: {fpath} ({len(lines)} lines)\n\n{numbered}"
+            all_lines = f.readlines()
+        total = len(all_lines)
+        s = max(1, start_line) - 1
+        e = min(total, end_line) if end_line > 0 else total
+        lines = all_lines[s:e]
+        numbered = "".join(f"{s + i + 1:6}\t{line}" for i, line in enumerate(lines))
+        header = f"File: {fpath} ({total} lines total, showing {s+1}-{e})\n\n"
+        if e < total:
+            header += f"[TRUNCATED — showing lines {s+1}-{e} of {total}. To read more: read_file(path, start_line={e+1}, end_line={min(total, e+100)})]\n\n"
+        return header + numbered
     except Exception as e:
         return f"Error reading file: {e}"
 
@@ -98,6 +105,47 @@ def edit_file(path: str, old_str: str, new_str: str) -> str:
         return f"Edited {fpath}"
     except Exception as e:
         return f"Error editing file: {e}"
+
+
+def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -> str:
+    """Replace lines [start_line, end_line] (1-indexed, inclusive) with new_content."""
+    fpath = _resolve(path)
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        total = len(lines)
+        if start_line < 1 or end_line < start_line or start_line > total:
+            return f"Error: invalid line range {start_line}-{end_line} (file has {total} lines)"
+        end_line = min(end_line, total)
+        replacement = new_content if new_content.endswith("\n") else new_content + "\n"
+        new_lines = lines[:start_line - 1] + [replacement] + lines[end_line:]
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        return f"Replaced lines {start_line}-{end_line} in {fpath}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def insert_after_line(path: str, line_number: int, new_content: str) -> str:
+    """Insert new_content after line_number (1-indexed) in the file."""
+    fpath = _resolve(path)
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        total = len(lines)
+        if line_number < 0 or line_number > total:
+            return f"Error: line_number {line_number} out of range (file has {total} lines)"
+        insertion = new_content if new_content.endswith("\n") else new_content + "\n"
+        new_lines = lines[:line_number] + [insertion] + lines[line_number:]
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        return f"Inserted after line {line_number} in {fpath}"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def list_files(path: str = ".", pattern: str = "**/*", max_depth: int = 3) -> str:
@@ -177,38 +225,53 @@ def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
     MAX_TOTAL = 200
     MAX_FILES = 30
 
-    # Normalise file_glob: if it contains path separators (e.g. "**/*.ts", "src/*.js")
-    # extract just the filename portion so fnmatch works against bare filenames.
-    _glob_basename = file_glob.replace("\\", "/").split("/")[-1] or "*"
+    # If path points directly to a file, search only that file
+    if os.path.isfile(dpath):
+        try:
+            with open(dpath, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            hits: list[str] = []
+            for i, line in enumerate(lines):
+                if regex.search(line):
+                    hits.append(f"  {i+1}: {line.rstrip()}")
+                    total += 1
+            if hits:
+                file_hits[os.path.relpath(dpath, os.getcwd()).replace("\\", "/")] = hits
+        except Exception as e:
+            return f"Error searching file: {e}"
+    else:
+        # Normalise file_glob: if it contains path separators (e.g. "**/*.ts", "src/*.js")
+        # extract just the filename portion so fnmatch works against bare filenames.
+        _glob_basename = file_glob.replace("\\", "/").split("/")[-1] or "*"
 
-    try:
-        for root, dirs, files in os.walk(dpath):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-            for fname in files:
-                if not fnmatch.fnmatch(fname, _glob_basename):
-                    continue
-                fpath = os.path.join(root, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                        lines = f.readlines()
-                except OSError:
-                    continue
-                hits: list[str] = []
-                for i, line in enumerate(lines):
-                    if regex.search(line):
-                        hits.append(f"  {i+1}: {line.rstrip()}")
-                        total += 1
-                        if total >= MAX_TOTAL:
-                            break
-                if hits:
-                    rel = os.path.relpath(fpath, dpath).replace("\\", "/")
-                    file_hits[rel] = hits
+        try:
+            for root, dirs, files in os.walk(dpath):
+                dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+                for fname in files:
+                    if not fnmatch.fnmatch(fname, _glob_basename):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                            lines = f.readlines()
+                    except OSError:
+                        continue
+                    hits = []
+                    for i, line in enumerate(lines):
+                        if regex.search(line):
+                            hits.append(f"  {i+1}: {line.rstrip()}")
+                            total += 1
+                            if total >= MAX_TOTAL:
+                                break
+                    if hits:
+                        rel = os.path.relpath(fpath, dpath).replace("\\", "/")
+                        file_hits[rel] = hits
+                    if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
+                        break
                 if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
                     break
-            if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
-                break
-    except Exception as e:
-        return f"Error searching files: {e}"
+        except Exception as e:
+            return f"Error searching files: {e}"
 
     if not file_hits:
         return f"No matches for '{pattern}' in {dpath}"
@@ -361,6 +424,313 @@ def upload_to_ks_tool(file_path: str, ks_slug: str) -> str:
         return f"Upload complete: {result}"
     except Exception as e:
         return f"Error uploading to KS: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Language-aware search & edit tools
+# ---------------------------------------------------------------------------
+
+def _read_lines(fpath: str) -> list[str]:
+    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+        return f.readlines()
+
+
+# ── HTML ────────────────────────────────────────────────────────────────────
+
+def search_html(path: str, selector: str) -> str:
+    """Find HTML elements by CSS selector. Returns matched elements with line numbers."""
+    fpath = _resolve(path)
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return "Error: beautifulsoup4 not installed. Run: pip install beautifulsoup4"
+    try:
+        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        soup = BeautifulSoup(content, "html.parser")
+        elements = soup.select(selector)
+        if not elements:
+            return f"No elements matching '{selector}' in {fpath}"
+        out = [f"Found {len(elements)} element(s) matching '{selector}':"]
+        for i, el in enumerate(elements[:20]):
+            line_no = getattr(el, "sourceline", "?")
+            snippet = str(el)
+            # Show only opening tag + first 120 chars to avoid flooding
+            first_line = snippet.split("\n")[0][:120]
+            out.append(f"\n  [{i+1}] line {line_no}: {first_line}")
+        return "\n".join(out)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def edit_html_attr(path: str, selector: str, attribute: str, value: str) -> str:
+    """Set an attribute on every HTML element matching selector. Safe — only touches the attribute value."""
+    fpath = _resolve(path)
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return "Error: beautifulsoup4 not installed."
+    try:
+        lines = _read_lines(fpath)
+        content = "".join(lines)
+        soup = BeautifulSoup(content, "html.parser")
+        elements = soup.select(selector)
+        if not elements:
+            return f"No elements matching '{selector}' found in {fpath}"
+        changed = 0
+        for el in elements:
+            line_no = getattr(el, "sourceline", None)
+            if line_no is None:
+                continue
+            # Patch only the specific line containing the opening tag
+            old_line = lines[line_no - 1]
+            attr_re = re.compile(rf'\b{re.escape(attribute)}=["\'][^"\']*["\']')
+            if attr_re.search(old_line):
+                new_line = attr_re.sub(f'{attribute}="{value}"', old_line, count=1)
+            elif f"<{el.name}" in old_line:
+                new_line = old_line.replace(f"<{el.name}", f'<{el.name} {attribute}="{value}"', 1)
+            else:
+                continue
+            lines[line_no - 1] = new_line
+            changed += 1
+        if not changed:
+            return f"Could not patch attribute '{attribute}' — elements found but line numbers unavailable. Use replace_lines instead."
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        return f"Set {attribute}=\"{value}\" on {changed} element(s) matching '{selector}' in {fpath}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ── XML ─────────────────────────────────────────────────────────────────────
+
+def search_xml(path: str, xpath: str) -> str:
+    """Find XML elements by XPath expression. Returns tag, attributes, text, and line numbers."""
+    fpath = _resolve(path)
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        import xml.etree.ElementTree as ET
+        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+            raw_lines = f.readlines()
+        tree = ET.parse(fpath)
+        root = tree.getroot()
+        elements = root.findall(xpath)
+        if not elements:
+            return f"No elements matching XPath '{xpath}' in {fpath}"
+        # Find line numbers by scanning raw file for matching tags
+        out = [f"Found {len(elements)} element(s) matching '{xpath}':"]
+        for i, el in enumerate(elements[:20]):
+            tag_local = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+            attrs = " ".join(f'{k}="{v}"' for k, v in el.attrib.items())
+            text = (el.text or "").strip()[:80]
+            # Find line number by searching for the tag in the raw file
+            pattern = re.compile(rf"<{re.escape(tag_local)}[\s>]")
+            hit_line = next(
+                (ln + 1 for ln, line in enumerate(raw_lines) if pattern.search(line)),
+                "?"
+            )
+            out.append(f"\n  [{i+1}] line {hit_line}: <{tag_local} {attrs}> text={text!r}")
+        return "\n".join(out)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def edit_xml_attr(path: str, xpath: str, attribute: str, value: str) -> str:
+    """Set an attribute on XML elements matching XPath. Writes back preserving structure."""
+    fpath = _resolve(path)
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(fpath)
+        root = tree.getroot()
+        elements = root.findall(xpath)
+        if not elements:
+            return f"No elements matching XPath '{xpath}'"
+        for el in elements:
+            el.set(attribute, value)
+        tree.write(fpath, encoding="unicode", xml_declaration=False)
+        return f"Set {attribute}=\"{value}\" on {len(elements)} element(s) in {fpath}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ── Python ───────────────────────────────────────────────────────────────────
+
+def search_python(path: str, name: str, kind: str = "any") -> str:
+    """
+    Find Python definitions by name using AST.
+    kind: 'function', 'class', 'import', or 'any'
+    Returns definition with start/end line numbers for use with replace_lines.
+    """
+    fpath = _resolve(path)
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        import ast as _ast
+        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+            source = f.read()
+            raw_lines = source.splitlines()
+        tree = _ast.parse(source, filename=fpath)
+        results = []
+        for node in _ast.walk(tree):
+            match kind:
+                case "function":
+                    if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                        continue
+                case "class":
+                    if not isinstance(node, _ast.ClassDef):
+                        continue
+                case "import":
+                    if not isinstance(node, (_ast.Import, _ast.ImportFrom)):
+                        continue
+                case _:
+                    if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                                             _ast.ClassDef, _ast.Import, _ast.ImportFrom)):
+                        continue
+            node_name = getattr(node, "name", None)
+            if node_name is None:
+                # imports
+                names = [a.name for a in getattr(node, "names", [])]
+                module = getattr(node, "module", "")
+                node_name = module + "." + ",".join(names) if module else ",".join(names)
+            if name.lower() not in node_name.lower():
+                continue
+            start = node.lineno
+            end = getattr(node, "end_lineno", start)
+            snippet = "\n".join(raw_lines[start - 1: min(start + 5, end)])
+            results.append(f"  lines {start}-{end}: {snippet[:200]}")
+        if not results:
+            return f"No {kind} named '{name}' found in {fpath}"
+        return f"Found {len(results)} match(es) for '{name}' in {fpath}:\n" + "\n".join(results)
+    except SyntaxError as e:
+        return f"Syntax error parsing {fpath}: {e}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ── Java ─────────────────────────────────────────────────────────────────────
+
+_JAVA_PATTERNS: dict[str, str] = {
+    "class":      r"(?:public|private|protected|abstract|final|\s)*\s+(?:class|interface|enum)\s+{name}\b",
+    "method":     r"(?:public|private|protected|static|final|synchronized|\s)+[\w<>\[\]]+\s+{name}\s*\(",
+    "field":      r"(?:public|private|protected|static|final|\s)+[\w<>\[\]]+\s+{name}\s*[=;]",
+    "annotation": r"@{name}\b",
+}
+
+def search_java(path: str, name: str, kind: str = "any") -> str:
+    """
+    Find Java class/method/field/annotation by name.
+    kind: 'class', 'method', 'field', 'annotation', or 'any'
+    Returns line numbers for use with replace_lines.
+    """
+    fpath = _resolve(path)
+    if os.path.isdir(fpath):
+        # Search across all .java files in directory
+        results = []
+        for root, _, files in os.walk(fpath):
+            for fname in files:
+                if fname.endswith(".java"):
+                    r = search_java(os.path.join(root, fname), name, kind)
+                    if "No match" not in r and "Error" not in r:
+                        results.append(r)
+        return "\n\n".join(results) if results else f"No {kind} named '{name}' found in {fpath}"
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        raw_lines = _read_lines(fpath)
+        patterns = (
+            {kind: _JAVA_PATTERNS[kind]} if kind in _JAVA_PATTERNS
+            else _JAVA_PATTERNS
+        )
+        hits = []
+        for k, pat in patterns.items():
+            regex = re.compile(pat.replace("{name}", re.escape(name)), re.IGNORECASE)
+            for i, line in enumerate(raw_lines):
+                if regex.search(line):
+                    # Find end of block (matching brace) or method signature
+                    end = i
+                    if "{" in line:
+                        depth = line.count("{") - line.count("}")
+                        j = i + 1
+                        while j < len(raw_lines) and depth > 0:
+                            depth += raw_lines[j].count("{") - raw_lines[j].count("}")
+                            j += 1
+                        end = j - 1
+                    hits.append(f"  [{k}] lines {i+1}-{end+1}: {line.rstrip()}")
+        if not hits:
+            return f"No {kind} named '{name}' found in {fpath}"
+        return f"Found {len(hits)} match(es) for '{name}' in {fpath}:\n" + "\n".join(hits)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ── JavaScript / TypeScript ──────────────────────────────────────────────────
+
+_JS_PATTERNS: dict[str, str] = {
+    "function":  r"(?:export\s+)?(?:async\s+)?function\s+{name}\s*\(",
+    "arrow":     r"(?:export\s+)?(?:const|let|var)\s+{name}\s*=\s*(?:async\s*)?\(",
+    "class":     r"(?:export\s+)?class\s+{name}\b",
+    "method":    r"(?:async\s+)?{name}\s*\([^)]*\)\s*\{{",
+    "import":    r"import\s+.*\b{name}\b.*from",
+    "export":    r"export\s+(?:default\s+)?(?:const|let|var|function|class)\s+{name}\b",
+}
+
+def search_js(path: str, name: str, kind: str = "any") -> str:
+    """
+    Find JavaScript/TypeScript function/class/arrow/import by name.
+    kind: 'function', 'arrow', 'class', 'method', 'import', 'export', or 'any'
+    Returns line numbers for use with replace_lines.
+    """
+    fpath = _resolve(path)
+    if os.path.isdir(fpath):
+        exts = {".js", ".ts", ".jsx", ".tsx", ".mjs"}
+        results = []
+        for root, _, files in os.walk(fpath):
+            if any(skip in root for skip in ("node_modules", ".git", "dist", "build")):
+                continue
+            for fname in files:
+                if any(fname.endswith(e) for e in exts):
+                    r = search_js(os.path.join(root, fname), name, kind)
+                    if "No match" not in r and "Error" not in r:
+                        results.append(r)
+        return "\n\n".join(results) if results else f"No {kind} named '{name}' found in {fpath}"
+    if not os.path.exists(fpath):
+        return f"Error: file not found: {fpath}"
+    try:
+        raw_lines = _read_lines(fpath)
+        patterns = (
+            {kind: _JS_PATTERNS[kind]} if kind in _JS_PATTERNS
+            else _JS_PATTERNS
+        )
+        hits = []
+        seen_lines: set[int] = set()
+        for k, pat in patterns.items():
+            regex = re.compile(pat.replace("{name}", re.escape(name)))
+            for i, line in enumerate(raw_lines):
+                if i in seen_lines:
+                    continue
+                if regex.search(line):
+                    end = i
+                    if "{" in line:
+                        depth = line.count("{") - line.count("}")
+                        j = i + 1
+                        while j < len(raw_lines) and depth > 0:
+                            depth += raw_lines[j].count("{") - raw_lines[j].count("}")
+                            j += 1
+                        end = j - 1
+                    seen_lines.add(i)
+                    hits.append(f"  [{k}] lines {i+1}-{end+1}: {line.rstrip()}")
+        if not hits:
+            return f"No {kind} named '{name}' found in {fpath}"
+        return f"Found {len(hits)} match(es) for '{name}' in {fpath}:\n" + "\n".join(hits)
+    except Exception as e:
+        return f"Error: {e}"
 
 
 # ---------------------------------------------------------------------------

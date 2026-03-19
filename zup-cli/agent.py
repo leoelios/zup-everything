@@ -19,6 +19,15 @@ import tools as tool_module
 TOOL_REGISTRY: dict[str, Callable] = {
     "read_file": tool_module.read_file,
     "edit_file": tool_module.edit_file,
+    "replace_lines": tool_module.replace_lines,
+    "insert_after_line": tool_module.insert_after_line,
+    "search_html": tool_module.search_html,
+    "edit_html_attr": tool_module.edit_html_attr,
+    "search_xml": tool_module.search_xml,
+    "edit_xml_attr": tool_module.edit_xml_attr,
+    "search_python": tool_module.search_python,
+    "search_java": tool_module.search_java,
+    "search_js": tool_module.search_js,
     "find_file": tool_module.find_file,
     "list_files": tool_module.list_files,
     "search_files": tool_module.search_files,
@@ -41,7 +50,15 @@ TOOL_CALL_RE = re.compile(
     r"<tool_call>\s*<name>([\w_]+)</name>\s*<parameters>(.*?)</parameters>\s*</tool_call>",
     re.DOTALL,
 )
+# Fallback: LLM sometimes emits <tool_call>toolname{...json...}</tool_call> (missing <name>/<parameters> tags)
+TOOL_CALL_FALLBACK_RE = re.compile(
+    r"<tool_call>\s*([\w_]+)\s*(\{.*?\})\s*(?:</parameters>)?\s*</tool_call>",
+    re.DOTALL,
+)
+# Detect any <tool_call> tag (used to identify malformed calls)
+TOOL_CALL_ANY_RE = re.compile(r"<tool_call>", re.DOTALL)
 THINKING_RE = re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL)
+TOOL_RESULT_RE = re.compile(r"<tool_result>.*?</tool_result>", re.DOTALL)
 
 # Errors that should trigger self-correction
 _ERROR_PREFIXES = ("Unknown tool", "Bad parameters", "Tool '", "Error", "error:")
@@ -59,12 +76,16 @@ def get_activity_hint(content: str) -> str:
     from ulid import ULID as _ULID
 
     prompt = (
-        "Analyze the following AI assistant output and respond with ONE short phrase "
-        "(3-8 words) describing what the AI is doing right now. "
-        "Examples: 'Lendo arquivos do projeto', 'Escrevendo testes', 'Analisando o código', "
-        "'Planning the implementation', 'Searching for relevant files'. "
-        "Reply with ONLY the phrase — no punctuation at the end, nothing else.\n\n"
-        f"Output:\n{content[:600]}"
+        "You are a progress tracker for an AI coding assistant. "
+        "Analyze the snippet below and output ONE short phrase (4-10 words) describing the specific action being performed RIGHT NOW.\n\n"
+        "Rules:\n"
+        "- Be SPECIFIC: mention file names, function names, component names, error messages, or concepts involved.\n"
+        "- Use active verbs: Implementando, Corrigindo, Refatorando, Adicionando, Removendo, Explicando, Verificando, Configurando, etc.\n"
+        "- BAD (too generic): 'Analisando o código', 'Escrevendo código', 'Explicando erro'\n"
+        "- GOOD (specific): 'Implementando autenticação JWT no middleware', 'Corrigindo NPE em UserService.findById', 'Adicionando validação no formulário de login'\n"
+        "- Reply with ONLY the phrase — no punctuation at the end, no quotes, nothing else.\n"
+        "- Use the same language as the content snippet.\n\n"
+        f"Snippet:\n{content[:800]}"
     )
     try:
         result = chat_nonstream(prompt, conversation_id=str(_ULID()))
@@ -87,9 +108,18 @@ def strip_thinking(text: str) -> str:
 
 # Expected parameter signatures shown to the LLM on correction
 _TOOL_SIGNATURES: dict[str, str] = {
-    "read_file":                 'read_file(path="<string>")',
+    "read_file":                 'read_file(path="<string>", start_line=<int optional>, end_line=<int optional>)',
     "find_file":                 'find_file(name="<glob e.g. index.html, *.py>", path="<optional dir>")',
     "edit_file":                 'edit_file(path="<string>", old_str="<exact text to replace>", new_str="<replacement>")',
+    "replace_lines":             'replace_lines(path="<string>", start_line=<int>, end_line=<int>, new_content="<string>")',
+    "insert_after_line":         'insert_after_line(path="<string>", line_number=<int>, new_content="<string>")',
+    "search_html":               'search_html(path="<string>", selector="<css selector>")',
+    "edit_html_attr":            'edit_html_attr(path="<string>", selector="<css selector>", attribute="<string>", value="<string>")',
+    "search_xml":                'search_xml(path="<string>", xpath="<xpath expression>")',
+    "edit_xml_attr":             'edit_xml_attr(path="<string>", xpath="<xpath expression>", attribute="<string>", value="<string>")',
+    "search_python":             'search_python(path="<string>", name="<string>", kind="<function|class|import|any>")',
+    "search_java":               'search_java(path="<string>", name="<string>", kind="<class|method|field|annotation|any>")',
+    "search_js":                 'search_js(path="<string>", name="<string>", kind="<function|arrow|class|method|import|export|any>")',
     "list_files":                'list_files(path="<string optional>", pattern="<specific glob e.g. **/*.py>", max_depth=<int optional>)',
     "search_files":              'search_files(pattern="<regex or literal string>", path="<optional>", file_glob="<optional>")',
     "bash":                      'bash(command="<string>", timeout=<int optional>)',
@@ -129,33 +159,39 @@ def _try_parse_python_dict(text: str) -> dict | None:
     return None
 
 
+def _parse_params(params_str: str) -> tuple[dict, str | None]:
+    """Parse a JSON params string, with XML and Python-dict fallbacks. Returns (params, error)."""
+    try:
+        return json.loads(params_str), None
+    except json.JSONDecodeError as e:
+        xml_params = _try_parse_xml_params(params_str)
+        if xml_params is not None:
+            return xml_params, None
+        py_params = _try_parse_python_dict(params_str)
+        if py_params is not None:
+            return py_params, None
+        return {}, f"{e} — raw content was: {params_str!r}"
+
+
 def parse_tool_calls(text: str) -> list[dict]:
     calls = []
     for m in TOOL_CALL_RE.finditer(text):
-        name = m.group(1).strip()
-        params_str = m.group(2).strip()
-        parse_error = None
-        try:
-            params = json.loads(params_str)
-        except json.JSONDecodeError as e:
-            # Attempt XML-style fallback
-            xml_params = _try_parse_xml_params(params_str)
-            if xml_params is not None:
-                params = xml_params
-            else:
-                # Attempt Python-dict fallback (e.g. single-quoted keys/values)
-                py_params = _try_parse_python_dict(params_str)
-                if py_params is not None:
-                    params = py_params
-                else:
-                    params = {}
-                    parse_error = f"{e} — raw content was: {params_str!r}"
-        calls.append({"name": name, "parameters": params, "_parse_error": parse_error})
+        params, parse_error = _parse_params(m.group(2).strip())
+        calls.append({"name": m.group(1).strip(), "parameters": params, "_parse_error": parse_error})
+
+    # Fallback: try <tool_call>toolname{...json...}</tool_call> (missing <name>/<parameters> tags)
+    if not calls and TOOL_CALL_ANY_RE.search(text):
+        for m in TOOL_CALL_FALLBACK_RE.finditer(text):
+            params, parse_error = _parse_params(m.group(2).strip())
+            calls.append({"name": m.group(1).strip(), "parameters": params, "_parse_error": parse_error, "_format_fallback": True})
+
     return calls
 
 
 def strip_tool_calls(text: str) -> str:
-    return TOOL_CALL_RE.sub("", text).strip()
+    text = TOOL_CALL_RE.sub("", text)
+    text = TOOL_CALL_FALLBACK_RE.sub("", text)
+    return text.strip()
 
 
 def _is_error(result: str) -> bool:
@@ -205,8 +241,10 @@ def _correction_note() -> str:
         "3. For edit_file errors: first call read_file to get the exact text, "
         "then use that exact text as old_str.\n"
         "   IMPORTANT: If read_file returned 'Error: file not found', do NOT call "
-        "edit_file on that path — the file does not exist. Use list_files or "
-        "search_files to find the correct path before editing.\n"
+        "edit_file on that path — the file does not exist. Use find_file or "
+        "search_files to locate the correct path first.\n"
+        "   NEVER invent file paths or assume where a file might be.\n"
+        "   NEVER import or use packages/libraries not already present in the project.\n"
         "4. For bash errors: check [exit_code N] and [stderr] output. Reason about "
         "WHY the command failed (missing dependency, wrong path, permission, syntax error, etc.) "
         "and retry with a corrected command or a different approach.\n"
@@ -217,8 +255,14 @@ def _correction_note() -> str:
 
 _READ_ONLY_TOOLS = {
     "read_file", "find_file", "list_files", "search_files",
+    "search_html", "search_xml", "search_python", "search_java", "search_js",
     "list_knowledge_sources", "get_ks_objects", "get_ks_details",
     "web_search", "fetch_page",
+}
+
+_WRITE_TOOLS = {
+    "edit_file", "replace_lines", "insert_after_line",
+    "edit_html_attr", "edit_xml_attr",
 }
 
 
@@ -230,6 +274,18 @@ def _completion_note(last_tools: list[str] | None = None) -> str:
             "Tool call completed. This was a read/search operation — the task is NOT done yet.\n"
             "You MUST continue: call the next tool to make progress toward completing the user's request.\n"
             "Do NOT report results or summarize until you have actually applied all changes.\n"
+            "</system_note>"
+        )
+    if last_tools and any(t in _WRITE_TOOLS for t in last_tools):
+        return (
+            "\n<system_note>\n"
+            "Write operation completed. You MUST verify before finishing:\n"
+            "1. Call read_file on the edited file and confirm the new content is present.\n"
+            "   OR use search_files/search_html to find the changed string.\n"
+            "2. If the file is Python: run bash(command='python -m py_compile <file>') to check syntax.\n"
+            "3. If the file is JavaScript: run bash(command='node --check <file>') to check syntax.\n"
+            "Only after successful verification give your final response.\n"
+            "If the content does not match expectations, fix it immediately.\n"
             "</system_note>"
         )
     return (
@@ -258,120 +314,64 @@ def _ask_user_note() -> str:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT_TEMPLATE = """\
-You are Zup CLI, an AI coding assistant. You help users with software engineering \
-tasks by reading and writing files, executing shell commands, and managing knowledge sources.
+You are Zup CLI, an AI coding assistant operating in {cwd} on Windows (cmd.exe shell).
 
-## Reasoning
+## Tool call format
 
-Before acting on any non-trivial request, reason through it inside <thinking>...</thinking> tags.
-Use this as your private scratchpad: break down the problem, plan which tools to use and in what
-order, and check your logic before committing to an approach.
+<tool_call><name>TOOL_NAME</name><parameters>{{"key": "value"}}</parameters></tool_call>
 
-IMPORTANT: Thinking is planning only — it does NOT execute anything. After the </thinking> block,
-you MUST output the actual <tool_call> tags in your response body to execute tools.
-Thinking about calling a tool is NOT the same as calling it. The tool call XML must appear
-OUTSIDE the thinking block to be executed.
+Parameters must be valid JSON. Call one tool at a time. After each <tool_result>, continue or give your final answer.
 
-Example:
-<thinking>
-The user wants to add a new function. I should first read the file to understand the structure,
-then edit the right location. Let me list files first to find the correct path.
-</thinking>
+## Rules
 
-## Tool call
+**Before acting:** reason privately in <thinking>...</thinking>. After </thinking>, emit a <tool_call> immediately — no prose.
 
-To use a tool output EXACTLY this format (no extra whitespace inside tags):
+**Read before write:** always read_file before editing. Never assume file contents.
 
-<tool_call><name>TOOL_NAME</name><parameters>{{"param": "value"}}</parameters></tool_call>
+**Stay grounded:** only use libraries/files/functions confirmed to exist via tools. Never invent imports or APIs.
 
-CRITICAL: The <parameters> block MUST contain valid JSON — never XML, never plain text.
-Correct:   <parameters>{{"path": "src/main.py"}}</parameters>
-WRONG:     <parameters><path>src/main.py</path></parameters>
-WRONG:     <parameters>src/main.py</parameters>
+**No re-reads:** if read_file is truncated, use read_file(path, start_line=N, end_line=M) for the next chunk — never re-read the full file.
 
-Rules:
-- Always read a file before editing it.
-- After receiving <tool_result> blocks, continue working or give your final answer.
-- Do NOT repeat tool calls that already have results.
-- If a tool result contains an error, read the error carefully, correct your approach, and retry.
-- NEVER ask the user a question or present options as plain text. \
-- ALWAYS use the ask_user tool when you need clarification or want to offer choices.
+**Minimal edits:** change only what is asked. Don't reformat or restructure unrelated code.
 
-## File Edit Rules
+**Edit tool choice:**
+- `edit_file` — exact string replacement. Use for short unique snippets.
+- `replace_lines` — by line number. Use when edit_file fails or content has special chars/emojis.
+- `insert_after_line` — insert after a line number without replacing.
 
-1. **Read before editing** — always call `read_file` first. Never assume file contents.
-2. **Use `edit_file` for existing files**
-3. **Base every edit on the actual file content** — copy the exact `old_str` from what `read_file` returned.
-5. **Use the right search tool**:
-   - Know the filename? → `find_file(name="index.html")`
-   - Looking for code/text inside files? → `search_files(pattern="keyword")`
-   - Avoid `list_files(pattern="**/*")`
+**Verify after every write:** call read_file (or search_files) to confirm the change. For Python run `bash(command="python -m py_compile <file>")`, for JS run `bash(command="node --check <file>")`. Fix and re-verify if wrong.
 
-## Available Tools
+**Never narrate:** forbidden phrases: "I will...", "Let me...", "I'm going to...", "Once I have...". Act, don't explain.
 
-read_file        – Read a file with line numbers.
-  params: {{"path": "<string>"}}
+**Questions:** use ask_user tool — never write questions as plain text.
 
-edit_file        – Modify an existing file, or create a new one.
-  To modify: {{"path": "<string>", "old_str": "<exact unique text to replace>", "new_str": "<replacement>"}}
-  To create:  {{"path": "<string>", "old_str": "", "new_str": "<full file content>"}}
-  Always copy old_str verbatim from read_file output. Chain multiple calls for multiple changes.
+**Bash:** use Windows commands (dir, type, powershell). [exit_code N≠0] means failure — diagnose and retry.
 
-find_file        – Find files by name. Use this first when you know the filename.
-  params: {{"name": "<glob e.g. index.html, *.py, config.*>", "path": "<string (optional)>"}}
+## Tools
 
-list_files       – List files in a directory with a specific glob pattern.
-  params: {{"path": "<string (optional)>", "pattern": "<glob (e.g. **/*.py, src/**/*.ts)>", "max_depth": <int (optional, default 3)>}}
-  WARNING: avoid pattern="**/*" — use find_file or search_files instead.
-
-search_files     – Search file contents with a regex or literal string. Returns every matching line with its line number. Use read_file for context around a specific line.
-  params: {{"pattern": "<regex or literal string>", "path": "<string (optional)>", "file_glob": "<glob (optional)>"}}
-
-bash             – Execute a shell command. The environment is Windows (cmd.exe).
-  params: {{"command": "<string>", "timeout": <int (optional, default 60)>}}
-  IMPORTANT: Always use Windows-compatible commands. Never use Unix commands.
-  Use: dir, type, del, copy, move, mkdir, rmdir, findstr, echo, cd, where, tasklist, powershell
-  Never use: ls, cat, rm, cp, mv, grep, touch, chmod, which, ps, kill, find (Unix)
-  For complex operations prefer PowerShell: powershell -Command "..."
-  output markers: [stderr] precedes error output; [exit_code N] (N≠0) means the command failed.
-  On failure: reason about the cause from [stderr]/[exit_code], then retry with a fix or try an alternative approach.
-
-list_knowledge_sources – List available knowledge sources.
-  params: {{"page": <int (optional)>, "size": <int (optional)>}}
-
-get_ks_objects   – Get documents stored in a knowledge source.
-  params: {{"slug": "<string>", "page": <int (optional)>, "size": <int (optional)>}}
-
-get_ks_details   – Get metadata for a single knowledge source.
-  params: {{"slug": "<string>"}}
-
-create_knowledge_source – Create a new knowledge source.
-  params: {{"name": "<string>", "slug": "<string>", "description": "<string (optional)>"}}
-
-upload_to_knowledge_source – Upload a local file to a knowledge source.
-  params: {{"file_path": "<string>", "ks_slug": "<string>"}}
-
-web_search       – Search the web via DuckDuckGo and return ranked results.
-  params: {{"query": "<string>", "max_results": <int (optional, default 6)>}}
-
-fetch_page       – Fetch a URL and return its readable text content (crawling).
-  params: {{"url": "<string>", "selector": "<css selector (optional)>"}}
-  Use selector to scope to a specific element, e.g. "article" or "main".
-
-ask_user         – Ask the user a clarifying question with up to 3 choices; the last option is always free-text.
-  params: {{"question": "<string>", "options": ["<opt_a>", "<opt_b>", "<opt_c>"]}}
-  MANDATORY: whenever you need to ask the user any question or present options, you MUST use this
-  tool — NEVER write questions or option lists as plain text in your response.
-  Returns the option chosen (e.g. "a) ...") or the user's typed answer (e.g. "d) ...").
-
-## Context
-Working directory: {cwd}
-OS: Windows — shell is cmd.exe. Always use Windows commands in bash tool calls.
-
-## Response Style
-- Be concise and direct. Lead with action, not explanation.
-- After completing tasks give a brief summary.
-- Use markdown for code and formatted output.
+read_file(path, start_line?, end_line?) — line-numbered file view
+edit_file(path, old_str, new_str) — exact string replace; old_str="" to create
+replace_lines(path, start_line, end_line, new_content) — line-range replace, encoding-safe
+insert_after_line(path, line_number, new_content) — insert without replacing
+find_file(name, path?) — find files by glob name
+list_files(path?, pattern?, max_depth?) — list directory; avoid pattern="**/*"
+search_files(pattern, path?, file_glob?) — regex search across files
+search_html(path, selector) — CSS selector search in HTML, returns line numbers
+edit_html_attr(path, selector, attribute, value) — set HTML attribute safely
+search_xml(path, xpath) — XPath search in XML, returns line numbers
+edit_xml_attr(path, xpath, attribute, value) — set XML attribute
+search_python(path, name, kind?) — find Python def/class by name via AST (kind: function|class|import|any)
+search_java(path, name, kind?) — find Java class/method by name (kind: class|method|field|annotation|any)
+search_js(path, name, kind?) — find JS/TS function/class by name (kind: function|arrow|class|method|import|export|any)
+bash(command, timeout?) — run shell command
+ask_user(question, options) — ask user with up to 3 options
+web_search(query, max_results?) — DuckDuckGo search
+fetch_page(url, selector?) — fetch web page text
+list_knowledge_sources(page?, size?) — list KS
+get_ks_objects(slug, page?, size?) — KS documents
+get_ks_details(slug) — KS metadata
+create_knowledge_source(name, slug, description?) — create KS
+upload_to_knowledge_source(file_path, ks_slug) — upload to KS
 """
 
 
@@ -380,13 +380,9 @@ def build_system_prompt() -> str:
 
 
 _TOOL_REMINDER = """\
-[System reminder]
-You are an AI coding assistant with direct tool access. You MUST call tools yourself to read, write, and edit files.
-NEVER ask the user to run commands manually. NEVER explain what the user should do. Just do it.
-To act, emit tool calls in this exact format:
-<tool_call><name>TOOL_NAME</name><parameters>{"key": "value"}</parameters></tool_call>
-Parameters must be valid JSON with double-quoted keys and string values.
-[End system reminder]"""
+[System reminder] Call tools directly — never ask the user to run anything manually. \
+After </thinking> emit a <tool_call> immediately, no prose. \
+Format: <tool_call><name>TOOL_NAME</name><parameters>{"key": "value"}</parameters></tool_call>"""
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +397,7 @@ class Agent:
     MAX_CONTINUATION_ITERATIONS = 10
 
     # Tools that mutate the filesystem or run shell commands — require user confirmation
-    CONFIRM_TOOLS = {"edit_file", "bash"}
+    CONFIRM_TOOLS = {"edit_file", "replace_lines", "insert_after_line", "edit_html_attr", "edit_xml_attr", "bash"}
 
     def __init__(
         self,
@@ -519,8 +515,8 @@ class Agent:
 
         full_message = ""
         token_info: dict = {}
-        _hint_fired = False
-        _HINT_THRESHOLD = 150
+        _HINT_INTERVAL = 600
+        _last_hint_len = -_HINT_INTERVAL  # first fires as soon as enough content arrives
 
         for chunk in chat_stream(
             full_prompt,
@@ -542,9 +538,9 @@ class Agent:
             if msg:
                 full_message += msg
                 self.on_llm_chunk(msg)
-                if not _hint_fired and len(full_message) >= _HINT_THRESHOLD:
-                    _hint_fired = True
-                    self.on_llm_activity(full_message)
+                if (len(full_message) - _last_hint_len) >= _HINT_INTERVAL:
+                    _last_hint_len = len(full_message)
+                    self.on_llm_activity(full_message[max(0, _last_hint_len - _HINT_INTERVAL):])
 
             stop_val = chunk.get("finish_reason")
             if stop_val and stop_val != "tool_use":
@@ -594,22 +590,25 @@ class Agent:
                 logger.log_tool_confirm(tc["name"], allowed)
                 if allowed is not True:
                     if isinstance(allowed, str) and allowed:
-                        result_text = (
+                        llm_text = (
                             f"User declined the '{tc['name']}' action and provided a reason: \"{allowed}\". "
                             "Reconsider your approach taking this feedback into account. "
                             "If a different action or approach would satisfy the user's goal, use that instead. "
                             "If you need clarification, use the ask_user tool. "
                             "NEVER explain what you would do in plain text — always use tools."
                         )
+                        display_text = f"Declined: {allowed}"
                     else:
-                        result_text = (
+                        llm_text = (
                             f"User declined the '{tc['name']}' action. "
                             "Continue working toward the user's goal using other tools. "
                             "If you need clarification or want to propose an alternative approach, use the ask_user tool. "
                             "NEVER explain what you would do in plain text — always use tools."
                         )
-                    self.on_tool_result(tc["name"], result_text)
-                    logger.log_tool_result(tc["name"], result_text)
+                        display_text = "Declined"
+                    result_text = llm_text
+                    self.on_tool_result(tc["name"], display_text)
+                    logger.log_tool_result(tc["name"], llm_text)
                     parts.append(
                         f"<tool_result>\n"
                         f"<name>{tc['name']}</name>\n"
@@ -636,10 +635,19 @@ class Agent:
             self.on_tool_result(tc["name"], result_text)
             logger.log_tool_result(tc["name"], result_text)
             # Truncate large results to avoid flooding the context
-            _MAX_RESULT_CHARS = 6000
+            _MAX_RESULT_CHARS = 12000
             truncated = result_text
             if len(result_text) > _MAX_RESULT_CHARS:
-                truncated = result_text[:_MAX_RESULT_CHARS] + f"\n... [truncated — {len(result_text) - _MAX_RESULT_CHARS} more chars]"
+                cut = result_text[:_MAX_RESULT_CHARS]
+                remaining = len(result_text) - _MAX_RESULT_CHARS
+                hint = (
+                    f"\n... [truncated — {remaining} more chars. "
+                    f"Use read_file(path, start_line=N, end_line=M) to read specific line ranges. "
+                    f"Do NOT re-read the full file — it will truncate the same way.]"
+                ) if tc["name"] == "read_file" else (
+                    f"\n... [truncated — {remaining} more chars. Narrow your search or use read_file with line ranges.]"
+                )
+                truncated = cut + hint
             parts.append(
                 f"<tool_result>\n"
                 f"<name>{tc['name']}</name>\n"
@@ -670,7 +678,63 @@ class Agent:
             tool_calls, text_part = self._process_response(message)
 
             if not tool_calls:
-                return strip_thinking(message), context_summary, execution_log
+                # Response was only <thinking> with no tool call and no text — force action
+                if not strip_thinking(message).strip():
+                    prompt = (
+                        f"[Task: {original_request}]\n\n"
+                        "ERROR: Your last response contained only a <thinking> block with no action.\n"
+                        "You MUST either:\n"
+                        "  1. Call a tool immediately with <tool_call>...\n"
+                        "  2. OR provide your final answer as plain text if the task is complete.\n"
+                        "Do one of these now."
+                    )
+                    continue
+                # LLM hallucinated <tool_result> or emitted a completely unparseable <tool_call>
+                has_tool_result = "<tool_result>" in message
+                has_unparsed_call = TOOL_CALL_ANY_RE.search(message) is not None
+                if has_tool_result or has_unparsed_call:
+                    problem = (
+                        "You generated <tool_result> tags yourself — that is reserved for the system."
+                        if has_tool_result else
+                        "You emitted a <tool_call> with an invalid format that could not be parsed."
+                    )
+                    correction = (
+                        f"[Task: {original_request}]\n\n"
+                        f"FORMAT ERROR: {problem}\n\n"
+                        "The ONLY valid format to call a tool is:\n"
+                        "<tool_call><name>TOOL_NAME</name>"
+                        "<parameters>{\"key\": \"value\"}</parameters></tool_call>\n\n"
+                        "Rules:\n"
+                        "- <name> tag contains ONLY the tool name (e.g. read_file)\n"
+                        "- <parameters> tag contains ONLY valid JSON\n"
+                        "- Do NOT write the tool name before <name>, do NOT skip any tag\n"
+                        "- <tool_result> is injected by the system — NEVER write it yourself\n\n"
+                        "Retry now with the correct format."
+                    )
+                    prompt = correction
+                    continue
+                # Detect "narration instead of action" — agent explaining what it will do
+                # instead of calling a tool. Only trigger when the task clearly needs more work.
+                clean_text = TOOL_RESULT_RE.sub("", strip_thinking(message)).strip()
+                _NARRATION_PHRASES = (
+                    "i will ", "i'll ", "i'm going to", "i'm waiting", "let me ",
+                    "once i have", "once i see", "i would ", "my plan", "i need to ",
+                    "i should ", "next i will", "first i will",
+                )
+                lower_text = clean_text.lower()
+                is_narration = (
+                    any(lower_text.startswith(p) or f"\n{p}" in lower_text for p in _NARRATION_PHRASES)
+                    and len(clean_text) < 800  # short responses without tool calls are suspect
+                )
+                if is_narration:
+                    prompt = (
+                        f"[Task: {original_request}]\n\n"
+                        "VIOLATION: You wrote explanatory text instead of calling a tool.\n"
+                        "Do NOT narrate, plan, or explain. Call a tool immediately.\n"
+                        "Your next response must start with a <tool_call> block."
+                    )
+                    continue
+                return clean_text, context_summary, execution_log
 
             # Execute only the FIRST tool call per iteration — forces step-by-step execution
             # and prevents the model from planning+executing everything at once.
@@ -719,7 +783,7 @@ class Agent:
         )
 
         if result is not None:
-            return result
+            return TOOL_RESULT_RE.sub("", result).strip()
 
         # Hit the iteration limit — build a continuation prompt with the real execution history
         done_summary = "\n".join(execution_log) if execution_log else "  (no tools executed)"
@@ -742,7 +806,9 @@ class Agent:
             context_summary=context_summary,
         )
 
-        return result if result is not None else (
+        if result is not None:
+            return TOOL_RESULT_RE.sub("", result).strip()
+        return (
             "Task incomplete after extended iterations. "
             "Review what was done and continue manually if needed."
         )
