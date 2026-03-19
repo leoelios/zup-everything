@@ -38,6 +38,7 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/branch status",    "/branch status",            "Show branch status and recent log"),
     ("/branch diff",      "/branch diff",              "PR-style diff against base branch"),
     ("/branch push",      "/branch push",              "Rebase on base branch and push"),
+    ("/branch end",       "/branch end",               "Finish worktree, delete directory, return to main CWD"),
     ("/exit",             "/exit",                    "Quit"),
 ]
 
@@ -546,6 +547,57 @@ def _branch_repo_root() -> str | None:
 def _handle_branch(parts: list[str]) -> bool:
     sub = parts[1].lower() if len(parts) > 1 else ""
 
+    # ── /branch end — finish worktree, return to main project ──────────────
+    if sub == "end":
+        worktree_path = os.getcwd()
+
+        # Find the main worktree (first entry in `git worktree list --porcelain`)
+        rc, out, _ = _git("worktree", "list", "--porcelain")
+        if rc != 0:
+            display.print_error("Could not list worktrees.")
+            return True
+
+        entries = out.strip().split("\n\n")
+        main_path = None
+        for entry in entries:
+            lines = entry.strip().splitlines()
+            if lines:
+                path_line = lines[0]
+                if path_line.startswith("worktree "):
+                    main_path = path_line[len("worktree "):]
+                    break  # first entry is always the main worktree
+
+        if not main_path:
+            display.print_error("Could not determine main worktree path.")
+            return True
+
+        if os.path.normpath(worktree_path) == os.path.normpath(main_path):
+            display.print_error("Already in the main worktree — nothing to end.")
+            return True
+
+        # Switch CWD back to main project before removing
+        try:
+            os.chdir(main_path)
+        except Exception as e:
+            display.print_error(f"Could not change to main directory: {e}")
+            return True
+
+        # Remove from git
+        rc, _, err = _git("worktree", "remove", worktree_path, "--force")
+        if rc != 0:
+            display.print_error(f"git worktree remove failed: {err}")
+
+        # Delete directory if it still exists
+        if os.path.isdir(worktree_path):
+            import shutil
+            try:
+                shutil.rmtree(worktree_path)
+            except Exception as e:
+                display.print_error(f"Could not delete directory: {e}")
+
+        display.print_info(f"Worktree removed. Working directory → {main_path}")
+        return True
+
     # ── /branch <name> — create worktree + branch ─────────────────────────
     if sub and sub not in ("commit", "status", "diff", "push"):
         name = parts[1]
@@ -697,6 +749,7 @@ def _handle_branch(parts: list[str]) -> bool:
   [bold white]/branch status[/bold white]    Show branch status and recent log
   [bold white]/branch diff[/bold white]      PR-style diff against develop/main/master
   [bold white]/branch push[/bold white]      Rebase on base branch and push
+  [bold white]/branch end[/bold white]       Finish worktree, delete directory, return to main CWD
 """)
     return True
 
@@ -719,6 +772,7 @@ HELP_TEXT = """
   /branch status                Show branch status and recent log
   /branch diff                  PR-style diff against develop/main/master
   /branch push                  Rebase on base branch and push
+  /branch end                   Finish worktree, delete directory, return to main CWD
   /exit                         Quit
 
 [bold cyan]Modifiers[/bold cyan]
