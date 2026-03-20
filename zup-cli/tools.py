@@ -211,9 +211,10 @@ def find_file(name: str, path: str = ".") -> str:
     return f"Found {len(matches)} file(s) matching '{name}' (searched under: {dpath}):\n" + "\n".join(matches[:100])
 
 
-def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
-    """Search file contents for a regex pattern recursively under path.
-    file_glob filters by filename (e.g. '*.java', '*.py'). Default '*' matches all files."""
+def search_in_files(pattern: str, path: str = ".", recursively: bool = True) -> str:
+    """Search file contents for a regex or literal string pattern.
+    path: directory or file to search in.
+    recursively: if True, walks all subdirectories; if False, searches only the top-level directory."""
     dpath = _resolve(path)
 
     # Compile regex; fall back to literal search if pattern is not valid regex
@@ -222,26 +223,26 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
     except re.error:
         regex = re.compile(re.escape(pattern), re.IGNORECASE)
 
-    # Collect every file under dpath that matches file_glob
+    # Collect all files to search
     all_files = []
     if os.path.isfile(dpath):
         all_files.append(dpath)
     elif os.path.isdir(dpath):
-        for root, dirs, files in os.walk(dpath):
-            # skip hidden dirs and known noise
-            dirs[:] = [
-                d for d in dirs
-                if not d.startswith(".")
-                and d not in {"node_modules", "__pycache__", ".venv", "venv"}
-            ]
-            for fname in files:
-                if fnmatch.fnmatch(fname, file_glob) or fnmatch.fnmatch(fname.lower(), file_glob.lower()):
+        if recursively:
+            for root, dirs, files in os.walk(dpath):
+                dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"node_modules", "__pycache__", ".venv", "venv"}]
+                for fname in files:
                     all_files.append(os.path.join(root, fname))
+        else:
+            for fname in os.listdir(dpath):
+                fpath = os.path.join(dpath, fname)
+                if os.path.isfile(fpath):
+                    all_files.append(fpath)
     else:
         return f"Error: path not found: {dpath}"
 
     if not all_files:
-        return f"No files matching '{file_glob}' found under {dpath}"
+        return f"No files found under {dpath}"
 
     # Search each file
     results = []
@@ -266,10 +267,7 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
             results.append((rel, hits))
 
     if not results:
-        return (
-            f"No matches for '{pattern}' in {dpath} "
-            f"(searched {len(all_files)} file(s) matching '{file_glob}')"
-        )
+        return f"No matches for '{pattern}' in {dpath} (searched {len(all_files)} file(s))"
 
     out = [f"Matches for '{pattern}' ({sum(len(h) for _, h in results)} hits in {len(results)} files):"]
     for rel, hits in results:

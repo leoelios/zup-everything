@@ -121,7 +121,7 @@ _TOOL_SIGNATURES: dict[str, str] = {
     "search_java":               'search_java(path="<string>", name="<string>", kind="<class|method|field|annotation|any>")',
     "search_js":                 'search_js(path="<string>", name="<string>", kind="<function|arrow|class|method|import|export|any>")',
     "list_files":                'list_files(path="<string optional>", pattern="<specific glob e.g. **/*.py>", max_depth=<int optional>)',
-    "search_in_files":           'search_in_files(pattern="<regex or literal string>", path="<optional>", file_glob="<shell glob e.g. *.java — default * matches all>")',
+    "search_in_files":           'search_in_files(pattern="<regex or literal string>", path="<directory or file>", recursively=<true|false>)',
     "bash":                      'bash(command="<string>", timeout=<int optional>)',
     "list_knowledge_sources":    'list_knowledge_sources(page=<int optional>, size=<int optional>)',
     "get_ks_objects":            'get_ks_objects(slug="<string>", page=<int optional>, size=<int optional>)',
@@ -355,7 +355,7 @@ replace_lines(path, start_line, end_line, new_content) — line-range replace, e
 insert_after_line(path, line_number, new_content) — insert without replacing
 find_file(name, path?) — recursively find files by glob name under path (searches ALL subdirectories)
 list_files(path?, pattern?, max_depth?) — list directory; avoid pattern="**/*"
-search_in_files(pattern, path?, file_glob?) — regex/literal search inside file contents (NOT file names); file_glob is a shell glob like '*.java' or '*.py', default '*' matches all files
+search_in_files(pattern, path, recursively?) — search inside file contents for a regex or literal string; recursively=true (default) walks all subdirectories
 search_html(path, selector) — CSS selector search in HTML, returns line numbers
 edit_html_attr(path, selector, attribute, value) — set HTML attribute safely
 search_xml(path, xpath) — XPath search in XML, returns line numbers
