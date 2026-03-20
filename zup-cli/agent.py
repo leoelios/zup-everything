@@ -367,7 +367,7 @@ edit_file(path, old_str, new_str) — exact string replace; old_str="" to create
 replace_lines(path, start_line, end_line, new_content) — line-range replace, encoding-safe
 insert_after_line(path, line_number, new_content) — insert without replacing
 find_file(name, path?) — recursively find files by glob name under path (searches ALL subdirectories)
-list_files(path?, pattern?, max_depth?) — list directory; avoid pattern="**/*"
+list_files(path?, pattern?, max_depth?) — list directory; avoid pattern="**/*"; always use max_depth=10 or higher
 search_in_files(pattern, path, recursively?) — search inside file contents for a regex or literal string; recursively=true (default) walks all subdirectories
 search_html(path, selector) — CSS selector search in HTML, returns line numbers
 edit_html_attr(path, selector, attribute, value) — set HTML attribute safely
@@ -446,6 +446,10 @@ class Agent:
         self.on_token_count = on_token_count or (lambda i, o: None)
         self.on_llm_activity = on_llm_activity or (lambda t: None)
         self.on_bash_output = on_bash_output or (lambda line, is_stderr: None)
+        # Conversation history: list of {"user": str, "assistant": str} dicts
+        self._history: list[dict] = []
+        # True at the start of each run() call; reset after the first _stream_collect
+        self._start_of_new_turn: bool = True
 
     def set_model(self, model_id: str, model_name: str):
         """Set active model and persist the choice."""
