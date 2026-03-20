@@ -41,6 +41,7 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/branch diff",      "/branch diff",              "PR-style diff against base branch"),
     ("/branch push",      "/branch push",              "Rebase on base branch and push"),
     ("/branch end",       "/branch end",               "Finish worktree, delete directory, return to main CWD"),
+    ("/iterations",       "/iterations [n]",           "Show or set max tool iterations"),
     ("/exit",             "/exit",                    "Quit"),
 ]
 
@@ -49,6 +50,7 @@ _MODIFIER_COMPLETIONS: list[tuple[str, str, str]] = [
     ("@multi",    "@multi <prompt>",    "Split task into parallel subtasks and merge results"),
     ("@insecure", "@insecure <prompt>", "Auto-accept all actions without confirmation"),
     ("@auto",     "@auto <prompt>",     "Autonomous orchestrator — completes task with no user input"),
+    ("@reason",   "@reason <prompt>",   "Reasoning mode — chain-of-thought until final answer, keeps tool confirmations"),
 ]
 
 # Regex to find an @-token being typed immediately before the cursor.
@@ -894,6 +896,7 @@ HELP_TEXT = """
   /branch diff                  PR-style diff against develop/main/master
   /branch push                  Rebase on base branch and push
   /branch end                   Finish worktree, delete directory, return to main CWD
+  /iterations [n]               Show or set max tool iterations (default 15)
   /exit                         Quit
 
 [bold cyan]Modifiers[/bold cyan]
@@ -959,6 +962,21 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
             display.print_info(f"Agent set to: {agent_name}")
         else:
             display.print_info("No agent selected.")
+        return True
+
+    if head == "/iterations":
+        if len(parts) > 1:
+            try:
+                n = int(parts[1])
+                if n < 1:
+                    display.print_error("Value must be >= 1.")
+                else:
+                    agent.MAX_TOOL_ITERATIONS = n
+                    display.print_info(f"Max tool iterations set to {n}.")
+            except ValueError:
+                display.print_error(f"Invalid number: {parts[1]}")
+        else:
+            display.print_info(f"Max tool iterations: {agent.MAX_TOOL_ITERATIONS}")
         return True
 
     if head == "/branch":
@@ -1119,11 +1137,8 @@ def _process(message: str, agent: Agent):
     # -----------------------------------------------------------------------
 
     try:
-        response = agent.run(message)
-        logger.log_agent_response(response)
-        display.stream_stop()
-        display.print_separator()
-        display.print_response(response)
+        from modifiers import run_reason
+        run_reason(message, agent)
     except KeyboardInterrupt:
         display.stream_stop()
         display.console.print("\n[yellow]Interrupted.[/yellow]")

@@ -70,10 +70,22 @@ def _is_bash_error(result: str) -> bool:
     return bool(re.search(r"\[exit_code \d*[1-9]\d*\]", result))
 
 
+_TAG_STRIP_RE = re.compile(r"<[^>]{1,40}>", re.DOTALL)
+
+
 def get_activity_hint(content: str) -> str:
     """Call LLM to get a short phrase describing what the agent is currently doing."""
     from api_client import chat_nonstream
     from ulid import ULID as _ULID
+
+    # Strip XML/tool tags so the hint LLM doesn't confuse them with HTML
+    clean_content = THINKING_RE.sub("", content)
+    clean_content = TOOL_CALL_RE.sub("", clean_content)
+    clean_content = _TAG_STRIP_RE.sub("", clean_content).strip()
+
+    # Nothing meaningful left after stripping — skip to avoid hallucinated hints
+    if len(clean_content) < 30:
+        return ""
 
     prompt = (
         "You are a progress tracker for an AI coding assistant. "
@@ -85,7 +97,7 @@ def get_activity_hint(content: str) -> str:
         "- GOOD (specific): 'Implementando autenticação JWT no middleware', 'Corrigindo NPE em UserService.findById', 'Adicionando validação no formulário de login'\n"
         "- Reply with ONLY the phrase — no punctuation at the end, no quotes, nothing else.\n"
         "- Use the same language as the content snippet.\n\n"
-        f"Snippet:\n{content[:800]}"
+        f"Snippet:\n{clean_content[:800]}"
     )
     try:
         result = chat_nonstream(prompt, conversation_id=str(_ULID()))
@@ -271,9 +283,10 @@ def _completion_note(last_tools: list[str] | None = None) -> str:
     if last_tools and all(t in _READ_ONLY_TOOLS for t in last_tools):
         return (
             "\n<system_note>\n"
-            "Tool call completed. This was a read/search operation — the task is NOT done yet.\n"
-            "You MUST continue: call the next tool to make progress toward completing the user's request.\n"
-            "Do NOT report results or summarize until you have actually applied all changes.\n"
+            "Tool call completed.\n"
+            "- If this result directly answers the user's question or request, provide your final response now.\n"
+            "- If more steps are needed (more files to read, changes to make), call the next tool.\n"
+            "- Do NOT repeat a tool call you already made with the same parameters.\n"
             "</system_note>"
         )
     if last_tools and any(t in _WRITE_TOOLS for t in last_tools):
@@ -543,7 +556,8 @@ class Agent:
                 self.on_llm_chunk(msg)
                 if (len(full_message) - _last_hint_len) >= _HINT_INTERVAL:
                     _last_hint_len = len(full_message)
-                    self.on_llm_activity(full_message[max(0, _last_hint_len - _HINT_INTERVAL):])
+                    thinking_so_far = parse_thinking(full_message)
+                    self.on_llm_activity(thinking_so_far or full_message[max(0, _last_hint_len - _HINT_INTERVAL):])
 
             stop_val = chunk.get("finish_reason")
             if stop_val and stop_val != "tool_use":
