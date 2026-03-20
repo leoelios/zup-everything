@@ -212,92 +212,69 @@ def find_file(name: str, path: str = ".") -> str:
 
 
 def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
-    """Search file contents with a regex. Returns every matching line with its line number.
-    file_glob is a shell glob pattern against file names (e.g. '*.java', '*.py'). Use '*' for all files."""
+    """Search file contents for a regex pattern recursively under path.
+    file_glob filters by filename (e.g. '*.java', '*.py'). Default '*' matches all files."""
     dpath = _resolve(path)
-    SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
 
+    # Compile regex; fall back to literal search if pattern is not valid regex
     try:
         regex = re.compile(pattern, re.IGNORECASE)
     except re.error:
-        # Pattern is not valid regex — fall back to literal string search
         regex = re.compile(re.escape(pattern), re.IGNORECASE)
 
-    file_hits: dict[str, list[str]] = {}
-    total = 0
-    files_scanned = 0
-    MAX_TOTAL = 200
-    MAX_FILES = 30
-
-    # If path points directly to a file, search only that file
+    # Collect every file under dpath that matches file_glob
+    all_files = []
     if os.path.isfile(dpath):
-        try:
-            with open(dpath, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-            files_scanned = 1
-            hits: list[str] = []
-            for i, line in enumerate(lines):
-                if regex.search(line):
-                    hits.append(f"  {i+1}: {line.rstrip()}")
-                    total += 1
-            if hits:
-                file_hits[os.path.relpath(dpath, os.getcwd()).replace("\\", "/")] = hits
-        except Exception as e:
-            return f"Error searching file: {e}"
+        all_files.append(dpath)
+    elif os.path.isdir(dpath):
+        for root, dirs, files in os.walk(dpath):
+            # skip hidden dirs and known noise
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".")
+                and d not in {"node_modules", "__pycache__", ".venv", "venv"}
+            ]
+            for fname in files:
+                if fnmatch.fnmatch(fname, file_glob) or fnmatch.fnmatch(fname.lower(), file_glob.lower()):
+                    all_files.append(os.path.join(root, fname))
     else:
-        if not os.path.isdir(dpath):
-            return f"Error: path not found: {dpath}"
+        return f"Error: path not found: {dpath}"
 
-        # Normalise file_glob: extract basename portion so fnmatch works against bare filenames.
-        # Also guard against regex-like patterns (e.g. ".*") that would silently match nothing.
-        _glob_basename = file_glob.replace("\\", "/").split("/")[-1] or "*"
-        if _glob_basename == ".*":
-            _glob_basename = "*"
+    if not all_files:
+        return f"No files matching '{file_glob}' found under {dpath}"
 
+    # Search each file
+    results = []
+    for fpath in all_files:
         try:
-            for root, dirs, files in os.walk(dpath):
-                dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-                for fname in files:
-                    if not fnmatch.fnmatch(fname, _glob_basename):
-                        continue
-                    fpath = os.path.join(root, fname)
-                    files_scanned += 1
-                    try:
-                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                            lines = f.readlines()
-                    except OSError:
-                        continue
-                    hits = []
-                    for i, line in enumerate(lines):
-                        if regex.search(line):
-                            hits.append(f"  {i+1}: {line.rstrip()}")
-                            total += 1
-                            if total >= MAX_TOTAL:
-                                break
-                    if hits:
-                        rel = os.path.relpath(fpath, dpath).replace("\\", "/")
-                        file_hits[rel] = hits
-                    if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
-                        break
-                if len(file_hits) >= MAX_FILES or total >= MAX_TOTAL:
-                    break
-        except Exception as e:
-            return f"Error searching files: {e}"
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except Exception:
+            try:
+                with open(fpath, "r", encoding="latin-1") as f:
+                    lines = f.readlines()
+            except Exception:
+                continue
 
-    if not file_hits:
-        glob_note = f" (file_glob={file_glob!r})" if not os.path.isfile(dpath) else ""
+        hits = []
+        for i, line in enumerate(lines):
+            if regex.search(line):
+                hits.append(f"  {i + 1}: {line.rstrip()}")
+
+        if hits:
+            rel = os.path.relpath(fpath, dpath).replace("\\", "/")
+            results.append((rel, hits))
+
+    if not results:
         return (
-            f"No matches for '{pattern}' in {dpath}{glob_note}\n"
-            f"Scanned {files_scanned} file(s). "
-            + ("If 0, the directory may be wrong or no files match the glob." if files_scanned == 0 else "Pattern did not match any line.")
+            f"No matches for '{pattern}' in {dpath} "
+            f"(searched {len(all_files)} file(s) matching '{file_glob}')"
         )
 
-    out = [f"Matches for '{pattern}' ({total} hits in {len(file_hits)} files):"]
-    for rel, hits in file_hits.items():
+    out = [f"Matches for '{pattern}' ({sum(len(h) for _, h in results)} hits in {len(results)} files):"]
+    for rel, hits in results:
         out.append(f"\n{rel}:")
         out.extend(hits)
-    if total >= MAX_TOTAL:
-        out.append(f"\n... truncated at {MAX_TOTAL} matches. Narrow your search pattern.")
     return "\n".join(out)
 
 
