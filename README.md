@@ -4,11 +4,7 @@
 - [x] Use stream version of chat api
 - [x] Overwrite mode vs edit mode
 - [x] Incluir tool de consulta web
-- [ ] existem algumas informacoes que o agente pode julgar importante para ser utilizada no futuro, colocar essas informacoes no knowledge source com slug ever-test-01 e
-- [ ] implementar comando /branch 'nome-branch-aqui' que irá abrir um git worktree separado, criar branch separada onde todo o contexto de alteracoes será feito /cwd nesse worktree
-- [ ] implementar comando /branch commit - Commitar alteracoes feitas na brach
-- [ ] implementar comando /branch status - verificar status atual
-- [ ] implementar comando /branch push - faz pull da develop/main/master nessa ordem de fallback, corrije possiveis conflitos e faz o push da branch
+- [x] NO modo do modifier @reason, ainda deve pedir ao usuario a resposta quando o agente fazer a chamada para a tool ask_user, atualmente ele está deixando o agente orquestrador responder, mas deve enviar a pergunta ao usuário que invocou o CLI
 
 ## agent configuration
 

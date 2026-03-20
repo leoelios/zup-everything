@@ -410,17 +410,21 @@ def run_auto(prompt: str, agent) -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_reason(prompt: str, agent) -> str:
-    """
+def run_reason(prompt: str, agent, use_llm_for_ask_user: bool = False) -> str:
+    '''
     @reason modifier — like @auto but WITHOUT auto-accepting tool confirmations.
 
     Behaviour:
     - Streams LLM output, tool calls and results live (same as normal mode).
     - Keeps normal tool confirmation prompts for mutating tools.
-    - Intercepts ask_user calls, shows the question + options, and answers via LLM.
+    - Intercepts ask_user calls:
+      - When use_llm_for_ask_user=True (explicit @reason modifier), shows the
+        question + options and answers via LLM.
+      - When use_llm_for_ask_user=False (normal REPL flow), routes the question
+        to the CLI user via the original ask_user tool.
     - Evaluates task completion after each agent run and continues if needed.
     - Ensures the agent always provides a final answer to the user's question.
-    """
+    '''
     import threading
     import display
     from agent import Agent, get_activity_hint
@@ -429,44 +433,55 @@ def run_reason(prompt: str, agent) -> str:
 
     MAX_REASON_ITERATIONS = agent.MAX_TOOL_ITERATIONS
 
-    display.print_info("[@reason] Reasoning mode — tool confirmations still required.")
+    display.print_info('[@reason] Reasoning mode — tool confirmations still required.')
 
     history: list[str] = []
 
-    # ── Orchestrator: answers ask_user questions via LLM ─────────────────────
+    # ── Orchestrator: handle ask_user questions ─────────────
     def _orchestrate(question: str, options: list) -> str:
         display.stream_stop()
         display.spinner_stop()
 
-        display.print_info(f"[@reason] Agent is asking: {question}")
+        display.print_info(f'[@reason] Agent is asking: {question}')
         for i, o in enumerate(options):
-            display.print_info(f"  {i + 1}. {o}")
-        display.print_info("[@reason] Orchestrator deciding…")
+            display.print_info(f'  {i + 1}. {o}')
 
-        opts_lines = "\n".join(f"  {i + 1}. {o}" for i, o in enumerate(options)) if options else ""
-        history_str = "\n".join(history[-5:]) if history else "None"
+        if use_llm_for_ask_user:
+            display.print_info('[@auto] Orchestrator deciding…')
 
-        full_prompt = (
-            f"{_AUTO_ORCHESTRATOR_SYSTEM}\n\n"
-            f"Original task: {prompt}\n\n"
-            f"Recent progress:\n{history_str}\n\n"
-            f"The agent is asking: {question}\n"
-            + (f"Options:\n{opts_lines}\n\n" if opts_lines else "\n")
-            + "Your answer:"
-        )
-        try:
-            result = chat_nonstream(
-                full_prompt,
-                conversation_id=agent.conversation_id + "-reason-orch",
-                agent_id=agent.selected_agent_id,
-                selected_model=agent.selected_model,
+            opts_lines = '\n'.join(f'  {i + 1}. {o}' for i, o in enumerate(options)) if options else ''
+            history_str = '\n'.join(history[-5:]) if history else 'None'
+
+            full_prompt = (
+                f'{_AUTO_ORCHESTRATOR_SYSTEM}\n\n'
+                f'Original task: {prompt}\n\n'
+                f'Recent progress:\n{history_str}\n\n'
+                f'The agent is asking: {question}\n'
+                + (f'Options:\n{opts_lines}\n\n' if opts_lines else '\n')
+                + 'Your answer:'
             )
-            answer = result.get("message", "").strip()
-        except Exception:
-            answer = options[0] if options else "yes"
+            try:
+                result = chat_nonstream(
+                    full_prompt,
+                    conversation_id=agent.conversation_id + '-reason-orch',
+                    agent_id=agent.selected_agent_id,
+                    selected_model=agent.selected_model,
+                )
+                answer = result.get('message', '').strip()
+            except Exception:
+                answer = options[0] if options else 'yes'
 
-        display.print_info(f"[@reason] Orchestrator chose: {answer!r}")
-        history.append(f"Agent asked: {question!r} → answered: {answer!r}")
+            display.print_info(f'[@auto] Orchestrator chose: {answer!r}')
+        else:
+            if original_ask_user is not None:
+                answer = original_ask_user(question, options)
+            else:
+                # Fallback: choose first option or 'yes' if none provided
+                answer = options[0] if options else 'yes'
+
+            display.print_info(f'[@reason] User chose: {answer!r}')
+
+        history.append(f'Agent asked: {question!r} → answered: {answer!r}')
         return answer
 
     # ── Completion evaluator ──────────────────────────────────────────────────
@@ -599,7 +614,7 @@ def run_reason(prompt: str, agent) -> str:
 MODIFIERS: dict[str, callable] = {
     "multi":  run_multi,
     "auto":   run_auto,
-    "reason": run_reason,
+    "reason": lambda prompt, agent: run_reason(prompt, agent, use_llm_for_ask_user=True),
 }
 
 # ---------------------------------------------------------------------------

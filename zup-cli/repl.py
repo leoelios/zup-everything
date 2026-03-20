@@ -1138,7 +1138,7 @@ def _process(message: str, agent: Agent):
 
     try:
         from modifiers import run_reason
-        run_reason(message, agent)
+        run_reason(message, agent, use_llm_for_ask_user=insecure_mode)
     except KeyboardInterrupt:
         display.stream_stop()
         display.console.print("\n[yellow]Interrupted.[/yellow]")
