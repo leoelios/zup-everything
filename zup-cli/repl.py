@@ -34,6 +34,8 @@ _SLASH_COMPLETIONS: list[tuple[str, str, str]] = [
     ("/ks create",        "/ks create <name> <slug>",  "Create a new knowledge source"),
     ("/ks upload",        "/ks upload <file> <slug>",  "Upload a file to a knowledge source"),
     ("/branch",           "/branch <name>",            "Create worktree + branch and switch CWD"),
+    ("/branch checkout",  "/branch checkout <name>",   "Switch CWD to an existing worktree/branch"),
+    ("/branch list",      "/branch list",              "List all branches and worktrees"),
     ("/branch commit",    "/branch commit",            "Commit all changes in current branch"),
     ("/branch status",    "/branch status",            "Show branch status and recent log"),
     ("/branch diff",      "/branch diff",              "PR-style diff against base branch"),
@@ -544,7 +546,7 @@ def _branch_repo_root() -> str | None:
     return out if rc == 0 else None
 
 
-def _handle_branch(parts: list[str]) -> bool:
+def _handle_branch(parts: list[str], agent: Agent) -> bool:
     sub = parts[1].lower() if len(parts) > 1 else ""
 
     # ── /branch end — finish worktree, return to main project ──────────────
@@ -596,10 +598,124 @@ def _handle_branch(parts: list[str]) -> bool:
                 display.print_error(f"Could not delete directory: {e}")
 
         display.print_info(f"Worktree removed. Working directory → {main_path}")
+        agent.reset()
+        return True
+
+    # ── /branch list — list all branches and worktrees ────────────────────
+    if sub == "list":
+        _, current_branch, _ = _git("branch", "--show-current")
+
+        # Worktrees
+        rc, out, _ = _git("worktree", "list", "--porcelain")
+        worktree_branches: set[str] = set()
+        if rc == 0:
+            display.console.print("\n[bold cyan]Worktrees[/bold cyan]")
+            for entry in out.strip().split("\n\n"):
+                lines_e = entry.strip().splitlines()
+                wt_path = wt_branch = wt_head = None
+                bare = False
+                for line in lines_e:
+                    if line.startswith("worktree "):
+                        wt_path = line[len("worktree "):]
+                    elif line.startswith("HEAD "):
+                        wt_head = line[5:12]
+                    elif line.startswith("branch "):
+                        wt_branch = line.split("/")[-1]
+                    elif line == "bare":
+                        bare = True
+                if bare or not wt_path:
+                    continue
+                label = wt_branch or "(detached)"
+                active = wt_branch == current_branch
+                marker = "[bold green]●[/bold green]" if active else "[dim]○[/dim]"
+                branch_style = "[bold white]" if active else ""
+                end_style = "[/bold white]" if active else ""
+                current_tag = " [dim green][current][/dim green]" if active else ""
+                display.console.print(
+                    f"  {marker} {branch_style}{label}{end_style}{current_tag}"
+                    f"  [dim]{wt_head or ''}  {wt_path}[/dim]"
+                )
+                if wt_branch:
+                    worktree_branches.add(wt_branch)
+
+        # All local branches (those not already shown as worktrees)
+        _, branches_raw, _ = _git("branch", "--format=%(refname:short) %(objectname:short) %(upstream:short)")
+        other_branches = []
+        for line in branches_raw.splitlines():
+            parts_b = line.split()
+            bname = parts_b[0] if parts_b else ""
+            bhead = parts_b[1] if len(parts_b) > 1 else ""
+            bup   = parts_b[2] if len(parts_b) > 2 else ""
+            if bname and bname not in worktree_branches:
+                other_branches.append((bname, bhead, bup))
+
+        if other_branches:
+            display.console.print("\n[bold cyan]Local branches[/bold cyan]")
+            for bname, bhead, bup in other_branches:
+                active = bname == current_branch
+                marker = "[bold green]●[/bold green]" if active else "[dim]○[/dim]"
+                branch_style = "[bold white]" if active else ""
+                end_style    = "[/bold white]" if active else ""
+                current_tag  = " [dim green][current][/dim green]" if active else ""
+                upstream_tag = f"  [dim]→ {bup}[/dim]" if bup else ""
+                display.console.print(
+                    f"  {marker} {branch_style}{bname}{end_style}{current_tag}"
+                    f"  [dim]{bhead}[/dim]{upstream_tag}"
+                )
+        display.console.print()
+        return True
+
+    # ── /branch checkout <name> — switch CWD to existing worktree ─────────
+    if sub == "checkout":
+        if len(parts) < 3:
+            display.print_error("Usage: /branch checkout <branch_name>")
+            return True
+
+        target = parts[2]
+
+        rc, out, _ = _git("worktree", "list", "--porcelain")
+        if rc != 0:
+            display.print_error("Could not list worktrees.")
+            return True
+
+        entries = out.strip().split("\n\n")
+        found_path = None
+        for entry in entries:
+            lines_e = entry.strip().splitlines()
+            entry_path = None
+            entry_branch = None
+            for line in lines_e:
+                if line.startswith("worktree "):
+                    entry_path = line[len("worktree "):]
+                elif line.startswith("branch "):
+                    # branch refs/heads/<name>
+                    entry_branch = line.split("/")[-1]
+            if entry_branch == target and entry_path:
+                found_path = entry_path
+                break
+
+        # Fallback: check .git-worktrees/<name> directory
+        if not found_path:
+            root = _branch_repo_root()
+            if root:
+                candidate = str(Path(root) / ".git-worktrees" / target)
+                if os.path.isdir(candidate):
+                    found_path = candidate
+
+        if not found_path:
+            display.print_error(f"No worktree found for branch '{target}'. Use /branch {target} to create it.")
+            return True
+
+        try:
+            os.chdir(found_path)
+            display.print_info(f"Switched to branch '{target}'. Working directory → {found_path}")
+            agent.reset()
+        except Exception as e:
+            display.print_error(f"Could not change directory: {e}")
         return True
 
     # ── /branch <name> — create worktree + branch ─────────────────────────
-    if sub and sub not in ("commit", "status", "diff", "push"):
+    if sub and sub not in ("commit", "status", "diff", "push", "checkout", "list"):
         name = parts[1]
         root = _branch_repo_root()
         if not root:
@@ -640,6 +756,7 @@ def _handle_branch(parts: list[str]) -> bool:
         try:
             os.chdir(worktree_path)
             display.print_info(f"Branch '{name}' created. Working directory → {worktree_path}")
+            agent.reset()
         except Exception as e:
             display.print_error(f"Could not change directory: {e}")
         return True
@@ -744,8 +861,10 @@ def _handle_branch(parts: list[str]) -> bool:
     display.console.print("""
 [bold cyan]/branch[/bold cyan] — manage feature branches via git worktrees
 
-  [bold white]/branch <name>[/bold white]    Create worktree + branch and switch CWD to it
-  [bold white]/branch commit[/bold white]    Commit all changes (prompts for message)
+  [bold white]/branch <name>[/bold white]         Create worktree + branch and switch CWD to it
+  [bold white]/branch list[/bold white]           List all branches and worktrees
+  [bold white]/branch checkout <name>[/bold white]  Switch CWD to an existing worktree/branch
+  [bold white]/branch commit[/bold white]         Commit all changes (prompts for message)
   [bold white]/branch status[/bold white]    Show branch status and recent log
   [bold white]/branch diff[/bold white]      PR-style diff against develop/main/master
   [bold white]/branch push[/bold white]      Rebase on base branch and push
@@ -768,6 +887,8 @@ HELP_TEXT = """
                                 Create a new knowledge source
   /ks upload <file> <slug>      Upload a local file to a knowledge source
   /branch <name>                Create git worktree + branch, switch CWD to it
+  /branch list                  List all branches and worktrees
+  /branch checkout <name>       Switch CWD to an existing worktree/branch
   /branch commit                Commit all changes (prompts for message)
   /branch status                Show branch status and recent log
   /branch diff                  PR-style diff against develop/main/master
@@ -841,7 +962,7 @@ def _handle_slash(cmd: str, agent: Agent) -> bool:
         return True
 
     if head == "/branch":
-        return _handle_branch(parts)
+        return _handle_branch(parts, agent)
 
     if head == "/ks":
         if len(parts) < 2:

@@ -379,10 +379,13 @@ def build_system_prompt() -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(cwd=os.getcwd())
 
 
-_TOOL_REMINDER = """\
-[System reminder] Call tools directly — never ask the user to run anything manually. \
-After </thinking> emit a <tool_call> immediately, no prose. \
-Format: <tool_call><name>TOOL_NAME</name><parameters>{"key": "value"}</parameters></tool_call>"""
+def _tool_reminder() -> str:
+    return (
+        f"[System reminder] cwd: {os.getcwd()} | "
+        "Call tools directly — never ask the user to run anything manually. "
+        "After </thinking> emit a <tool_call> immediately, no prose. "
+        'Format: <tool_call><name>TOOL_NAME</name><parameters>{"key": "value"}</parameters></tool_call>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +467,7 @@ class Agent:
         return f"{build_system_prompt()}\n\n---\n\nUser request: {user_message}"
 
     def _build_followup_prompt(self, user_message: str) -> str:
-        return f"{_TOOL_REMINDER}\n\n{user_message}"
+        return f"{_tool_reminder()}\n\n{user_message}"
 
     def _call_api(self, prompt: str, streaming: bool = False):
         from api_client import chat_nonstream, chat_stream

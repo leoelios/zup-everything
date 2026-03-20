@@ -7,27 +7,42 @@ import fnmatch
 import os
 import re
 import subprocess
-from glob import glob
+from pathlib import Path
 from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+def _resolve(path: str) -> str:
+    """Return a normalised absolute path.
+    On Windows, prepend \\?\\ to lift the 260-char MAX_PATH limit for all
+    file-system operations (open, exists, makedirs, os.walk, etc.).
+    """
+    path = os.path.expanduser(path)
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)
+    path = os.path.normpath(path)
+    if os.name == "nt" and not path.startswith("\\\\?\\"):
+        path = "\\\\?\\" + path
+    return path
+
+
+def _clean_path(path: str) -> str:
+    """Strip the Windows long-path prefix for human-readable messages."""
+    return path[4:] if path.startswith("\\\\?\\") else path
 
 
 # ---------------------------------------------------------------------------
 # File tools
 # ---------------------------------------------------------------------------
 
-def _resolve(path: str) -> str:
-    path = os.path.expanduser(path)
-    if not os.path.isabs(path):
-        path = os.path.join(os.getcwd(), path)
-    return os.path.normpath(path)
-
-
-
 def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
     """Read a file with line numbers. Use start_line/end_line to read a specific range."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
@@ -36,9 +51,12 @@ def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
         e = min(total, end_line) if end_line > 0 else total
         lines = all_lines[s:e]
         numbered = "".join(f"{s + i + 1:6}\t{line}" for i, line in enumerate(lines))
-        header = f"File: {fpath} ({total} lines total, showing {s+1}-{e})\n\n"
+        header = f"File: {_clean_path(fpath)} ({total} lines total, showing {s+1}-{e})\n\n"
         if e < total:
-            header += f"[TRUNCATED — showing lines {s+1}-{e} of {total}. To read more: read_file(path, start_line={e+1}, end_line={min(total, e+100)})]\n\n"
+            header += (
+                f"[TRUNCATED — showing lines {s+1}-{e} of {total}. "
+                f"To read more: read_file(path, start_line={e+1}, end_line={min(total, e+100)})]\n\n"
+            )
         return header + numbered
     except Exception as e:
         return f"Error reading file: {e}"
@@ -52,7 +70,7 @@ def write_file(path: str, content: str) -> str:
             os.makedirs(parent, exist_ok=True)
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(content)
-        return f"Wrote {len(content)} bytes to {fpath}"
+        return f"Wrote {len(content)} bytes to {_clean_path(fpath)}"
     except Exception as e:
         return f"Error writing file: {e}"
 
@@ -70,15 +88,15 @@ def edit_file(path: str, old_str: str, new_str: str) -> str:
                 os.makedirs(parent, exist_ok=True)
             with open(fpath, "w", encoding="utf-8") as f:
                 f.write(new_str)
-            return f"Created {fpath}"
-        return f"Error: file not found: {fpath}"
+            return f"Created {_clean_path(fpath)}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         with open(fpath, "r", encoding="utf-8") as f:
             content = f.read()
 
         count = content.count(old_str)
         if count == 0:
-            return f"Error: string not found in {fpath}"
+            return f"Error: string not found in {_clean_path(fpath)}"
         if count > 1:
             return (
                 f"Error: string found {count} times — provide more surrounding context "
@@ -89,7 +107,7 @@ def edit_file(path: str, old_str: str, new_str: str) -> str:
 
         if not new_content.strip():
             os.remove(fpath)
-            return f"Deleted {fpath} (file became empty after edit)"
+            return f"Deleted {_clean_path(fpath)} (file became empty after edit)"
 
         # Heuristic: if the replaced chunk covers most of the file, skip the
         # string-search overhead and just overwrite the whole file directly.
@@ -98,11 +116,11 @@ def edit_file(path: str, old_str: str, new_str: str) -> str:
         if old_lines / total_lines >= _FULL_REWRITE_THRESHOLD:
             with open(fpath, "w", encoding="utf-8") as f:
                 f.write(new_content)
-            return f"Rewrote {fpath} (full overwrite — change spanned {old_lines}/{total_lines} lines)"
+            return f"Rewrote {_clean_path(fpath)} (full overwrite — change spanned {old_lines}/{total_lines} lines)"
 
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(new_content)
-        return f"Edited {fpath}"
+        return f"Edited {_clean_path(fpath)}"
     except Exception as e:
         return f"Error editing file: {e}"
 
@@ -111,7 +129,7 @@ def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -
     """Replace lines [start_line, end_line] (1-indexed, inclusive) with new_content."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         with open(fpath, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -123,7 +141,7 @@ def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -
         new_lines = lines[:start_line - 1] + [replacement] + lines[end_line:]
         with open(fpath, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
-        return f"Replaced lines {start_line}-{end_line} in {fpath}"
+        return f"Replaced lines {start_line}-{end_line} in {_clean_path(fpath)}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -132,7 +150,7 @@ def insert_after_line(path: str, line_number: int, new_content: str) -> str:
     """Insert new_content after line_number (1-indexed) in the file."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         with open(fpath, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -143,7 +161,7 @@ def insert_after_line(path: str, line_number: int, new_content: str) -> str:
         new_lines = lines[:line_number] + [insertion] + lines[line_number:]
         with open(fpath, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
-        return f"Inserted after line {line_number} in {fpath}"
+        return f"Inserted after line {line_number} in {_clean_path(fpath)}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -152,50 +170,53 @@ def list_files(path: str = ".", pattern: str = "**/*", max_depth: int = 3) -> st
     """List files. Use specific patterns (e.g. '*.py', 'src/**/*.ts') to avoid huge outputs."""
     dpath = _resolve(path)
     if not os.path.exists(dpath):
-        return f"Error: directory not found: {dpath}"
+        return f"Error: directory not found: {_clean_path(dpath)}"
 
     # Warn and limit depth for broad patterns to avoid token waste
     is_broad = pattern in ("**/*", "**/.*", "*") or pattern == "**/*.*"
-    if is_broad:
-        hint = (
-            "TIP: Pattern '**/*' is very broad. "
-            "Use search_in_files(pattern='keyword') to find code, "
-            "or list_files(pattern='*.py') for a specific file type.\n"
-        )
-    else:
-        hint = ""
+    hint = (
+        "TIP: Pattern '**/*' is very broad. "
+        "Use search_in_files(pattern='keyword') to find code, "
+        "or list_files(pattern='*.py') for a specific file type.\n"
+    ) if is_broad else ""
+
+    SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
 
     try:
-        matches = glob(os.path.join(dpath, pattern), recursive=True)
+        # pathlib.Path.glob supports ** patterns and handles \\?\ long paths on Windows
+        base = Path(dpath)
         entries = []
-        for m in sorted(matches):
-            rel = os.path.relpath(m, dpath).replace("\\", "/")
-            # Enforce max_depth for broad patterns
-            if is_broad and rel.count("/") >= max_depth:
+        for m in sorted(base.glob(pattern)):
+            try:
+                rel = m.relative_to(base).as_posix()
+            except ValueError:
                 continue
-            # Skip common noise dirs
             parts = rel.split("/")
-            skip = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
-            if any(p in skip for p in parts):
+            # Skip noise dirs
+            if any(p in SKIP_DIRS for p in parts):
                 continue
-            if os.path.isdir(m):
-                entries.append(rel + "/")
-            else:
-                entries.append(rel)
+            # Enforce max_depth for broad patterns
+            if is_broad and len(parts) > max_depth:
+                continue
+            entries.append(rel + "/" if m.is_dir() else rel)
+
         if not entries:
-            return f"{hint}No entries found in {dpath} matching '{pattern}'"
+            return f"{hint}No entries found in {_clean_path(dpath)} matching '{pattern}'"
         cap = 100 if is_broad else 300
         truncated = entries[:cap]
         more = len(entries) - cap
-        suffix = f"\n... ({more} more — use a specific pattern or search_in_files to narrow down)" if more > 0 else ""
-        return f"{hint}Files in {dpath}:\n" + "\n".join(truncated) + suffix
+        suffix = (
+            f"\n... ({more} more — use a specific pattern or search_in_files to narrow down)"
+            if more > 0 else ""
+        )
+        return f"{hint}Files in {_clean_path(dpath)}:\n" + "\n".join(truncated) + suffix
     except Exception as e:
         return f"Error listing files: {e}"
 
 
 def find_file(name: str, path: str = ".") -> str:
     """Find files recursively by name pattern (glob). Searches all subdirectories. Use this to locate files by name, not content."""
-    dpath = os.path.normpath(_resolve(path))
+    dpath = _resolve(path)
     # Auto-add wildcards if no glob chars present so bare names like "routes" match "routes.ts"
     pattern = name if any(c in name for c in ("*", "?", "[")) else f"*{name}*"
     SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
@@ -205,10 +226,16 @@ def find_file(name: str, path: str = ".") -> str:
         for fname in files:
             if fnmatch.fnmatch(fname.lower(), pattern.lower()):
                 rel = os.path.relpath(os.path.join(root, fname), dpath).replace("\\", "/")
+                # Strip any residual \\?\ from relpath on Windows
+                if rel.startswith("\\\\?\\"):
+                    rel = rel[4:]
                 matches.append(rel)
     if not matches:
-        return f"No file matching '{name}' found (searched recursively under: {dpath})"
-    return f"Found {len(matches)} file(s) matching '{name}' (searched under: {dpath}):\n" + "\n".join(matches[:100])
+        return f"No file matching '{name}' found (searched recursively under: {_clean_path(dpath)})"
+    return (
+        f"Found {len(matches)} file(s) matching '{name}' (searched under: {_clean_path(dpath)}):\n"
+        + "\n".join(matches[:100])
+    )
 
 
 def search_in_files(pattern: str, path: str = ".", recursively: bool = True) -> str:
@@ -230,7 +257,10 @@ def search_in_files(pattern: str, path: str = ".", recursively: bool = True) -> 
     elif os.path.isdir(dpath):
         if recursively:
             for root, dirs, files in os.walk(dpath):
-                dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"node_modules", "__pycache__", ".venv", "venv"}]
+                dirs[:] = [
+                    d for d in dirs
+                    if not d.startswith(".") and d not in {"node_modules", "__pycache__", ".venv", "venv"}
+                ]
                 for fname in files:
                     all_files.append(os.path.join(root, fname))
         else:
@@ -239,10 +269,10 @@ def search_in_files(pattern: str, path: str = ".", recursively: bool = True) -> 
                 if os.path.isfile(fpath):
                     all_files.append(fpath)
     else:
-        return f"Error: path not found: {dpath}"
+        return f"Error: path not found: {_clean_path(dpath)}"
 
     if not all_files:
-        return f"No files found under {dpath}"
+        return f"No files found under {_clean_path(dpath)}"
 
     # Search each file
     results = []
@@ -264,10 +294,12 @@ def search_in_files(pattern: str, path: str = ".", recursively: bool = True) -> 
 
         if hits:
             rel = os.path.relpath(fpath, dpath).replace("\\", "/")
+            if rel.startswith("\\\\?\\"):
+                rel = rel[4:]
             results.append((rel, hits))
 
     if not results:
-        return f"No matches for '{pattern}' in {dpath} (searched {len(all_files)} file(s))"
+        return f"No matches for '{pattern}' in {_clean_path(dpath)} (searched {len(all_files)} file(s))"
 
     out = [f"Matches for '{pattern}' ({sum(len(h) for _, h in results)} hits in {len(results)} files):"]
     for rel, hits in results:
@@ -406,7 +438,7 @@ def create_ks_tool(name: str, slug: str, description: str = "") -> str:
 def upload_to_ks_tool(file_path: str, ks_slug: str) -> str:
     fpath = _resolve(file_path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         from api_client import upload_file_to_ks
 
@@ -431,7 +463,7 @@ def search_html(path: str, selector: str) -> str:
     """Find HTML elements by CSS selector. Returns matched elements with line numbers."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         from bs4 import BeautifulSoup
     except ImportError:
@@ -442,12 +474,11 @@ def search_html(path: str, selector: str) -> str:
         soup = BeautifulSoup(content, "html.parser")
         elements = soup.select(selector)
         if not elements:
-            return f"No elements matching '{selector}' in {fpath}"
+            return f"No elements matching '{selector}' in {_clean_path(fpath)}"
         out = [f"Found {len(elements)} element(s) matching '{selector}':"]
         for i, el in enumerate(elements[:20]):
             line_no = getattr(el, "sourceline", "?")
             snippet = str(el)
-            # Show only opening tag + first 120 chars to avoid flooding
             first_line = snippet.split("\n")[0][:120]
             out.append(f"\n  [{i+1}] line {line_no}: {first_line}")
         return "\n".join(out)
@@ -459,7 +490,7 @@ def edit_html_attr(path: str, selector: str, attribute: str, value: str) -> str:
     """Set an attribute on every HTML element matching selector. Safe — only touches the attribute value."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         from bs4 import BeautifulSoup
     except ImportError:
@@ -470,13 +501,12 @@ def edit_html_attr(path: str, selector: str, attribute: str, value: str) -> str:
         soup = BeautifulSoup(content, "html.parser")
         elements = soup.select(selector)
         if not elements:
-            return f"No elements matching '{selector}' found in {fpath}"
+            return f"No elements matching '{selector}' found in {_clean_path(fpath)}"
         changed = 0
         for el in elements:
             line_no = getattr(el, "sourceline", None)
             if line_no is None:
                 continue
-            # Patch only the specific line containing the opening tag
             old_line = lines[line_no - 1]
             attr_re = re.compile(rf'\b{re.escape(attribute)}=["\'][^"\']*["\']')
             if attr_re.search(old_line):
@@ -488,10 +518,13 @@ def edit_html_attr(path: str, selector: str, attribute: str, value: str) -> str:
             lines[line_no - 1] = new_line
             changed += 1
         if not changed:
-            return f"Could not patch attribute '{attribute}' — elements found but line numbers unavailable. Use replace_lines instead."
+            return (
+                f"Could not patch attribute '{attribute}' — elements found but line numbers unavailable. "
+                "Use replace_lines instead."
+            )
         with open(fpath, "w", encoding="utf-8") as f:
             f.writelines(lines)
-        return f"Set {attribute}=\"{value}\" on {changed} element(s) matching '{selector}' in {fpath}"
+        return f"Set {attribute}=\"{value}\" on {changed} element(s) matching '{selector}' in {_clean_path(fpath)}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -502,7 +535,7 @@ def search_xml(path: str, xpath: str) -> str:
     """Find XML elements by XPath expression. Returns tag, attributes, text, and line numbers."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         import xml.etree.ElementTree as ET
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
@@ -511,14 +544,12 @@ def search_xml(path: str, xpath: str) -> str:
         root = tree.getroot()
         elements = root.findall(xpath)
         if not elements:
-            return f"No elements matching XPath '{xpath}' in {fpath}"
-        # Find line numbers by scanning raw file for matching tags
+            return f"No elements matching XPath '{xpath}' in {_clean_path(fpath)}"
         out = [f"Found {len(elements)} element(s) matching '{xpath}':"]
         for i, el in enumerate(elements[:20]):
             tag_local = el.tag.split("}")[-1] if "}" in el.tag else el.tag
             attrs = " ".join(f'{k}="{v}"' for k, v in el.attrib.items())
             text = (el.text or "").strip()[:80]
-            # Find line number by searching for the tag in the raw file
             pattern = re.compile(rf"<{re.escape(tag_local)}[\s>]")
             hit_line = next(
                 (ln + 1 for ln, line in enumerate(raw_lines) if pattern.search(line)),
@@ -534,7 +565,7 @@ def edit_xml_attr(path: str, xpath: str, attribute: str, value: str) -> str:
     """Set an attribute on XML elements matching XPath. Writes back preserving structure."""
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         import xml.etree.ElementTree as ET
         tree = ET.parse(fpath)
@@ -545,7 +576,7 @@ def edit_xml_attr(path: str, xpath: str, attribute: str, value: str) -> str:
         for el in elements:
             el.set(attribute, value)
         tree.write(fpath, encoding="unicode", xml_declaration=False)
-        return f"Set {attribute}=\"{value}\" on {len(elements)} element(s) in {fpath}"
+        return f"Set {attribute}=\"{value}\" on {len(elements)} element(s) in {_clean_path(fpath)}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -560,13 +591,13 @@ def search_python(path: str, name: str, kind: str = "any") -> str:
     """
     fpath = _resolve(path)
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         import ast as _ast
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
             source = f.read()
             raw_lines = source.splitlines()
-        tree = _ast.parse(source, filename=fpath)
+        tree = _ast.parse(source, filename=_clean_path(fpath))
         results = []
         for node in _ast.walk(tree):
             match kind:
@@ -596,10 +627,10 @@ def search_python(path: str, name: str, kind: str = "any") -> str:
             snippet = "\n".join(raw_lines[start - 1: min(start + 5, end)])
             results.append(f"  lines {start}-{end}: {snippet[:200]}")
         if not results:
-            return f"No {kind} named '{name}' found in {fpath}"
-        return f"Found {len(results)} match(es) for '{name}' in {fpath}:\n" + "\n".join(results)
+            return f"No {kind} named '{name}' found in {_clean_path(fpath)}"
+        return f"Found {len(results)} match(es) for '{name}' in {_clean_path(fpath)}:\n" + "\n".join(results)
     except SyntaxError as e:
-        return f"Syntax error parsing {fpath}: {e}"
+        return f"Syntax error parsing {_clean_path(fpath)}: {e}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -631,9 +662,9 @@ def search_java(path: str, name: str, kind: str = "any") -> str:
                     r = search_java(os.path.join(root, fname), name, kind)
                     if "No match" not in r and "Error" not in r:
                         results.append(r)
-        return "\n\n".join(results) if results else f"No {kind} named '{name}' found in {fpath}"
+        return "\n\n".join(results) if results else f"No {kind} named '{name}' found in {_clean_path(fpath)}"
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         raw_lines = _read_lines(fpath)
         patterns = (
@@ -645,7 +676,6 @@ def search_java(path: str, name: str, kind: str = "any") -> str:
             regex = re.compile(pat.replace("{name}", re.escape(name)), re.IGNORECASE)
             for i, line in enumerate(raw_lines):
                 if regex.search(line):
-                    # Find end of block (matching brace) or method signature
                     end = i
                     if "{" in line:
                         depth = line.count("{") - line.count("}")
@@ -656,8 +686,8 @@ def search_java(path: str, name: str, kind: str = "any") -> str:
                         end = j - 1
                     hits.append(f"  [{k}] lines {i+1}-{end+1}: {line.rstrip()}")
         if not hits:
-            return f"No {kind} named '{name}' found in {fpath}"
-        return f"Found {len(hits)} match(es) for '{name}' in {fpath}:\n" + "\n".join(hits)
+            return f"No {kind} named '{name}' found in {_clean_path(fpath)}"
+        return f"Found {len(hits)} match(es) for '{name}' in {_clean_path(fpath)}:\n" + "\n".join(hits)
     except Exception as e:
         return f"Error: {e}"
 
@@ -691,9 +721,9 @@ def search_js(path: str, name: str, kind: str = "any") -> str:
                     r = search_js(os.path.join(root, fname), name, kind)
                     if "No match" not in r and "Error" not in r:
                         results.append(r)
-        return "\n\n".join(results) if results else f"No {kind} named '{name}' found in {fpath}"
+        return "\n\n".join(results) if results else f"No {kind} named '{name}' found in {_clean_path(fpath)}"
     if not os.path.exists(fpath):
-        return f"Error: file not found: {fpath}"
+        return f"Error: file not found: {_clean_path(fpath)}"
     try:
         raw_lines = _read_lines(fpath)
         patterns = (
@@ -719,8 +749,8 @@ def search_js(path: str, name: str, kind: str = "any") -> str:
                     seen_lines.add(i)
                     hits.append(f"  [{k}] lines {i+1}-{end+1}: {line.rstrip()}")
         if not hits:
-            return f"No {kind} named '{name}' found in {fpath}"
-        return f"Found {len(hits)} match(es) for '{name}' in {fpath}:\n" + "\n".join(hits)
+            return f"No {kind} named '{name}' found in {_clean_path(fpath)}"
+        return f"Found {len(hits)} match(es) for '{name}' in {_clean_path(fpath)}:\n" + "\n".join(hits)
     except Exception as e:
         return f"Error: {e}"
 
