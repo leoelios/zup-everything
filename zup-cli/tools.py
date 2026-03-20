@@ -19,7 +19,7 @@ def _resolve(path: str) -> str:
     path = os.path.expanduser(path)
     if not os.path.isabs(path):
         path = os.path.join(os.getcwd(), path)
-    return path
+    return os.path.normpath(path)
 
 
 
@@ -169,12 +169,12 @@ def list_files(path: str = ".", pattern: str = "**/*", max_depth: int = 3) -> st
         matches = glob(os.path.join(dpath, pattern), recursive=True)
         entries = []
         for m in sorted(matches):
-            rel = os.path.relpath(m, dpath)
+            rel = os.path.relpath(m, dpath).replace("\\", "/")
             # Enforce max_depth for broad patterns
-            if is_broad and rel.count(os.sep) >= max_depth:
+            if is_broad and rel.count("/") >= max_depth:
                 continue
             # Skip common noise dirs
-            parts = rel.replace("\\", "/").split("/")
+            parts = rel.split("/")
             skip = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
             if any(p in skip for p in parts):
                 continue
@@ -225,6 +225,7 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
 
     file_hits: dict[str, list[str]] = {}
     total = 0
+    files_scanned = 0
     MAX_TOTAL = 200
     MAX_FILES = 30
 
@@ -233,6 +234,7 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
         try:
             with open(dpath, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
+            files_scanned = 1
             hits: list[str] = []
             for i, line in enumerate(lines):
                 if regex.search(line):
@@ -243,6 +245,9 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
         except Exception as e:
             return f"Error searching file: {e}"
     else:
+        if not os.path.isdir(dpath):
+            return f"Error: path not found: {dpath}"
+
         # Normalise file_glob: extract basename portion so fnmatch works against bare filenames.
         # Also guard against regex-like patterns (e.g. ".*") that would silently match nothing.
         _glob_basename = file_glob.replace("\\", "/").split("/")[-1] or "*"
@@ -256,6 +261,7 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
                     if not fnmatch.fnmatch(fname, _glob_basename):
                         continue
                     fpath = os.path.join(root, fname)
+                    files_scanned += 1
                     try:
                         with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                             lines = f.readlines()
@@ -279,7 +285,12 @@ def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
             return f"Error searching files: {e}"
 
     if not file_hits:
-        return f"No matches for '{pattern}' in {dpath}"
+        glob_note = f" (file_glob={file_glob!r})" if not os.path.isfile(dpath) else ""
+        return (
+            f"No matches for '{pattern}' in {dpath}{glob_note}\n"
+            f"Scanned {files_scanned} file(s). "
+            + ("If 0, the directory may be wrong or no files match the glob." if files_scanned == 0 else "Pattern did not match any line.")
+        )
 
     out = [f"Matches for '{pattern}' ({total} hits in {len(file_hits)} files):"]
     for rel, hits in file_hits.items():
@@ -307,7 +318,6 @@ def bash(command: str, timeout: int = 60, on_output=None) -> str:
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             cwd=os.getcwd(),
         )
         stdout_lines: list[str] = []
@@ -315,7 +325,7 @@ def bash(command: str, timeout: int = 60, on_output=None) -> str:
 
         def _read(stream, lines, is_stderr: bool):
             for raw in stream:
-                line = raw.rstrip("\n")
+                line = raw.decode("utf-8", errors="replace").rstrip("\n")
                 lines.append(line)
                 if on_output:
                     on_output(line, is_stderr)
@@ -637,8 +647,10 @@ def search_java(path: str, name: str, kind: str = "any") -> str:
     fpath = _resolve(path)
     if os.path.isdir(fpath):
         # Search across all .java files in directory
+        _SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
         results = []
-        for root, _, files in os.walk(fpath):
+        for root, dirs, files in os.walk(fpath):
+            dirs[:] = [d for d in dirs if d not in _SKIP and not d.startswith(".")]
             for fname in files:
                 if fname.endswith(".java"):
                     r = search_java(os.path.join(root, fname), name, kind)
@@ -695,10 +707,10 @@ def search_js(path: str, name: str, kind: str = "any") -> str:
     fpath = _resolve(path)
     if os.path.isdir(fpath):
         exts = {".js", ".ts", ".jsx", ".tsx", ".mjs"}
+        _SKIP = {"node_modules", ".git", "dist", "build", "__pycache__", ".next"}
         results = []
-        for root, _, files in os.walk(fpath):
-            if any(skip in root for skip in ("node_modules", ".git", "dist", "build")):
-                continue
+        for root, dirs, files in os.walk(fpath):
+            dirs[:] = [d for d in dirs if d not in _SKIP and not d.startswith(".")]
             for fname in files:
                 if any(fname.endswith(e) for e in exts):
                     r = search_js(os.path.join(root, fname), name, kind)
