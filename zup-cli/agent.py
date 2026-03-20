@@ -353,7 +353,7 @@ read_file(path, start_line?, end_line?) — line-numbered file view
 edit_file(path, old_str, new_str) — exact string replace; old_str="" to create
 replace_lines(path, start_line, end_line, new_content) — line-range replace, encoding-safe
 insert_after_line(path, line_number, new_content) — insert without replacing
-find_file(name, path?) — find files by glob name
+find_file(name, path?) — recursively find files by glob name under path (searches ALL subdirectories)
 list_files(path?, pattern?, max_depth?) — list directory; avoid pattern="**/*"
 search_files(pattern, path?, file_glob?) — regex search across files
 search_html(path, selector) — CSS selector search in HTML, returns line numbers

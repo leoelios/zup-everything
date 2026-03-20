@@ -194,19 +194,21 @@ def list_files(path: str = ".", pattern: str = "**/*", max_depth: int = 3) -> st
 
 
 def find_file(name: str, path: str = ".") -> str:
-    """Find files by name pattern (glob). Use this to locate files by name, not content."""
-    dpath = _resolve(path)
+    """Find files recursively by name pattern (glob). Searches all subdirectories. Use this to locate files by name, not content."""
+    dpath = os.path.normpath(_resolve(path))
+    # Auto-add wildcards if no glob chars present so bare names like "routes" match "routes.ts"
+    pattern = name if any(c in name for c in ("*", "?", "[")) else f"*{name}*"
     SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
     matches = []
     for root, dirs, files in os.walk(dpath):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for fname in files:
-            if fnmatch.fnmatch(fname.lower(), name.lower()):
+            if fnmatch.fnmatch(fname.lower(), pattern.lower()):
                 rel = os.path.relpath(os.path.join(root, fname), dpath).replace("\\", "/")
                 matches.append(rel)
     if not matches:
-        return f"No file matching '{name}' found in {dpath}"
-    return f"Found {len(matches)} file(s) matching '{name}':\n" + "\n".join(matches[:50])
+        return f"No file matching '{name}' found (searched recursively under: {dpath})"
+    return f"Found {len(matches)} file(s) matching '{name}' (searched under: {dpath}):\n" + "\n".join(matches[:100])
 
 
 def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
