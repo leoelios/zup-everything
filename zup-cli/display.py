@@ -271,48 +271,21 @@ def print_thinking(text: str) -> None:
     console.print(Rule(style="color(8)"))
 
 
-def _shorten_path(v: str) -> str:
-    """Convert absolute path to relative (to cwd). Falls back to basename if still long."""
-    import os
-    if not isinstance(v, str):
-        return v
-    # Only process strings that look like absolute paths
-    stripped = v.strip()
-    if not (stripped.startswith("/") or (len(stripped) > 2 and stripped[1] == ":")):
-        return v
-    try:
-        rel = os.path.relpath(stripped).replace("\\", "/")
-        # If relpath goes way up (../../..) just use the original basename
-        if rel.count("..") > 2:
-            return os.path.basename(stripped)
-        return rel
-    except ValueError:
-        return os.path.basename(stripped)
-
-
 def print_tool_use(name: str, parameters: dict) -> None:
-    import os
-
-    # ── bash: show command prominently, paths inside it shortened ────────────
     if name == "bash":
         cmd = parameters.get("command", "")
-        # Replace any absolute path segments in the command string
-        cwd = os.getcwd().replace("\\", "/")
-        cmd_display = cmd.replace(os.getcwd(), ".").replace(cwd, ".")
-        console.print(f"  [bold cyan]●[/bold cyan] [cyan]bash[/cyan]  [bold white]{cmd_display}[/bold white]")
+        console.print(f"  [bold cyan]●[/bold cyan] [cyan]bash[/cyan]  [bold white]{cmd}[/bold white]")
         return
 
-    # ── other tools: shorten path values, truncate diffs ─────────────────────
     params_preview = {}
     for k, v in parameters.items():
         if k in ("old_str", "new_str") and isinstance(v, str) and len(v) > 30:
             params_preview[k] = v[:27] + "..."
             continue
-        if isinstance(v, str):
-            v = _shorten_path(v)
-            if len(v) > 80:
-                v = v[:77] + "..."
-        params_preview[k] = v
+        if isinstance(v, str) and len(v) > 100:
+            params_preview[k] = v[:97] + "..."
+        else:
+            params_preview[k] = v
 
     params_str = ", ".join(f"{k}: {json.dumps(v)}" for k, v in params_preview.items())
     console.print(f"  [bold cyan]●[/bold cyan] [cyan]{name}[/cyan]({params_str})")
