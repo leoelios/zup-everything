@@ -30,7 +30,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "search_js": tool_module.search_js,
     "find_file": tool_module.find_file,
     "list_files": tool_module.list_files,
-    "search_files": tool_module.search_files,
+    "search_in_files": tool_module.search_in_files,
     "bash": tool_module.bash,
     "list_knowledge_sources": tool_module.list_knowledge_sources_tool,
     "get_ks_objects": tool_module.get_ks_objects_tool,
@@ -121,7 +121,7 @@ _TOOL_SIGNATURES: dict[str, str] = {
     "search_java":               'search_java(path="<string>", name="<string>", kind="<class|method|field|annotation|any>")',
     "search_js":                 'search_js(path="<string>", name="<string>", kind="<function|arrow|class|method|import|export|any>")',
     "list_files":                'list_files(path="<string optional>", pattern="<specific glob e.g. **/*.py>", max_depth=<int optional>)',
-    "search_files":              'search_files(pattern="<regex or literal string>", path="<optional>", file_glob="<optional>")',
+    "search_in_files":           'search_in_files(pattern="<regex or literal string>", path="<optional>", file_glob="<shell glob e.g. *.java — default * matches all>")',
     "bash":                      'bash(command="<string>", timeout=<int optional>)',
     "list_knowledge_sources":    'list_knowledge_sources(page=<int optional>, size=<int optional>)',
     "get_ks_objects":            'get_ks_objects(slug="<string>", page=<int optional>, size=<int optional>)',
@@ -254,7 +254,7 @@ def _correction_note() -> str:
 
 
 _READ_ONLY_TOOLS = {
-    "read_file", "find_file", "list_files", "search_files",
+    "read_file", "find_file", "list_files", "search_in_files",
     "search_html", "search_xml", "search_python", "search_java", "search_js",
     "list_knowledge_sources", "get_ks_objects", "get_ks_details",
     "web_search", "fetch_page",
@@ -355,7 +355,7 @@ replace_lines(path, start_line, end_line, new_content) — line-range replace, e
 insert_after_line(path, line_number, new_content) — insert without replacing
 find_file(name, path?) — recursively find files by glob name under path (searches ALL subdirectories)
 list_files(path?, pattern?, max_depth?) — list directory; avoid pattern="**/*"
-search_files(pattern, path?, file_glob?) — regex search across files
+search_in_files(pattern, path?, file_glob?) — regex/literal search inside file contents (NOT file names); file_glob is a shell glob like '*.java' or '*.py', default '*' matches all files
 search_html(path, selector) — CSS selector search in HTML, returns line numbers
 edit_html_attr(path, selector, attribute, value) — set HTML attribute safely
 search_xml(path, xpath) — XPath search in XML, returns line numbers

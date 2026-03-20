@@ -159,7 +159,7 @@ def list_files(path: str = ".", pattern: str = "**/*", max_depth: int = 3) -> st
     if is_broad:
         hint = (
             "TIP: Pattern '**/*' is very broad. "
-            "Use search_files(pattern='keyword') to find code, "
+            "Use search_in_files(pattern='keyword') to find code, "
             "or list_files(pattern='*.py') for a specific file type.\n"
         )
     else:
@@ -187,7 +187,7 @@ def list_files(path: str = ".", pattern: str = "**/*", max_depth: int = 3) -> st
         cap = 100 if is_broad else 300
         truncated = entries[:cap]
         more = len(entries) - cap
-        suffix = f"\n... ({more} more — use a specific pattern or search_files to narrow down)" if more > 0 else ""
+        suffix = f"\n... ({more} more — use a specific pattern or search_in_files to narrow down)" if more > 0 else ""
         return f"{hint}Files in {dpath}:\n" + "\n".join(truncated) + suffix
     except Exception as e:
         return f"Error listing files: {e}"
@@ -211,8 +211,9 @@ def find_file(name: str, path: str = ".") -> str:
     return f"Found {len(matches)} file(s) matching '{name}' (searched under: {dpath}):\n" + "\n".join(matches[:100])
 
 
-def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
-    """Search file contents with a regex. Returns every matching line with its line number."""
+def search_in_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
+    """Search file contents with a regex. Returns every matching line with its line number.
+    file_glob is a shell glob pattern against file names (e.g. '*.java', '*.py'). Use '*' for all files."""
     dpath = _resolve(path)
     SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
 
@@ -242,9 +243,11 @@ def search_files(pattern: str, path: str = ".", file_glob: str = "*") -> str:
         except Exception as e:
             return f"Error searching file: {e}"
     else:
-        # Normalise file_glob: if it contains path separators (e.g. "**/*.ts", "src/*.js")
-        # extract just the filename portion so fnmatch works against bare filenames.
+        # Normalise file_glob: extract basename portion so fnmatch works against bare filenames.
+        # Also guard against regex-like patterns (e.g. ".*") that would silently match nothing.
         _glob_basename = file_glob.replace("\\", "/").split("/")[-1] or "*"
+        if _glob_basename == ".*":
+            _glob_basename = "*"
 
         try:
             for root, dirs, files in os.walk(dpath):
