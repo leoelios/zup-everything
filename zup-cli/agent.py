@@ -246,22 +246,9 @@ def execute_tool(name: str, parameters: dict, parse_error: str | None = None) ->
 def _correction_note() -> str:
     """Appended when any tool result contains an error — prompts self-correction."""
     return (
-        "\n<system_note>\n"
-        "One or more tool calls above returned errors. Instructions:\n"
-        "1. Read each <tool_result> error message carefully.\n"
-        "2. Fix the tool name or parameters exactly as shown in the error.\n"
-        "3. For edit_file errors: first call read_file to get the exact text, "
-        "then use that exact text as old_str.\n"
-        "   IMPORTANT: If read_file returned 'Error: file not found', do NOT call "
-        "edit_file on that path — the file does not exist. Use find_file or "
-        "search_files to locate the correct path first.\n"
-        "   NEVER invent file paths or assume where a file might be.\n"
-        "   NEVER import or use packages/libraries not already present in the project.\n"
-        "4. For bash errors: check [exit_code N] and [stderr] output. Reason about "
-        "WHY the command failed (missing dependency, wrong path, permission, syntax error, etc.) "
-        "and retry with a corrected command or a different approach.\n"
-        "5. Retry only the failed calls — do not repeat successful ones.\n"
-        "</system_note>"
+        "\n<system_note>Tool error. Fix parameters and retry. "
+        "For edit_file: read_file first to get exact text. "
+        "For bash: check [exit_code] and [stderr], retry with corrected command.</system_note>"
     )
 
 
@@ -280,46 +267,14 @@ _WRITE_TOOLS = {
 
 def _completion_note(last_tools: list[str] | None = None) -> str:
     """Appended when all tool calls succeeded — model decides whether to continue or wrap up."""
-    if last_tools and all(t in _READ_ONLY_TOOLS for t in last_tools):
-        return (
-            "\n<system_note>\n"
-            "Tool call completed.\n"
-            "- If this result directly answers the user's question or request, provide your final response now.\n"
-            "- If more steps are needed (more files to read, changes to make), call the next tool.\n"
-            "- Do NOT repeat a tool call you already made with the same parameters.\n"
-            "</system_note>"
-        )
     if last_tools and any(t in _WRITE_TOOLS for t in last_tools):
-        return (
-            "\n<system_note>\n"
-            "Write operation completed. You MUST verify before finishing:\n"
-            "1. Call read_file on the edited file and confirm the new content is present.\n"
-            "   OR use search_files/search_html to find the changed string.\n"
-            "2. If the file is Python: run bash(command='python -m py_compile <file>') to check syntax.\n"
-            "3. If the file is JavaScript: run bash(command='node --check <file>') to check syntax.\n"
-            "Only after successful verification give your final response.\n"
-            "If the content does not match expectations, fix it immediately.\n"
-            "</system_note>"
-        )
-    return (
-        "\n<system_note>\n"
-        "Tool call completed. "
-        "If the task is fully done, provide your final response now. "
-        "If more steps are needed, call the next tool.\n"
-        "</system_note>"
-    )
+        return "\n<system_note>Write done. Verify with read_file, then respond.</system_note>"
+    return "\n<system_note>Tool done. Continue or give final answer.</system_note>"
 
 
 def _ask_user_note() -> str:
     """Appended after an ask_user tool result — allows the model to keep using tools."""
-    return (
-        "\n<system_note>\n"
-        "The user has answered your question via ask_user. "
-        "Process their answer and continue. "
-        "If you need further clarification, call ask_user again. "
-        "NEVER write follow-up questions or option lists as plain text — always use ask_user.\n"
-        "</system_note>"
-    )
+    return "\n<system_note>User answered. Continue.</system_note>"
 
 
 # ---------------------------------------------------------------------------
@@ -327,64 +282,40 @@ def _ask_user_note() -> str:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT_TEMPLATE = """\
-You are Zup CLI, an AI coding assistant operating in {cwd} on Windows (cmd.exe shell).
+You are Zup CLI, an AI coding assistant. cwd: {cwd} (Windows, cmd.exe).
 
 ## Tool call format
-
 <tool_call><name>TOOL_NAME</name><parameters>{{"key": "value"}}</parameters></tool_call>
-
-Parameters must be valid JSON. Call one tool at a time. After each <tool_result>, continue or give your final answer.
+One tool per turn. Parameters: valid JSON. After each <tool_result>, call the next tool or give your final answer.
 
 ## Rules
-
-**Before acting:** reason privately in <thinking>...</thinking>. After </thinking>, emit a <tool_call> immediately — no prose.
-
-**Read before write:** always read_file before editing. Never assume file contents.
-
-**Stay grounded:** only use libraries/files/functions confirmed to exist via tools. Never invent imports or APIs.
-
-**No re-reads:** if read_file is truncated, use read_file(path, start_line=N, end_line=M) for the next chunk — never re-read the full file.
-
-**Minimal edits:** change only what is asked. Don't reformat or restructure unrelated code.
-
-**Edit tool choice:**
-- `edit_file` — exact string replacement. Use for short unique snippets.
-- `replace_lines` — by line number. Use when edit_file fails or content has special chars/emojis.
-- `insert_after_line` — insert after a line number without replacing.
-
-**Verify after every write:** call read_file (or search_files) to confirm the change. For Python run `bash(command="python -m py_compile <file>")`, for JS run `bash(command="node --check <file>")`. Fix and re-verify if wrong.
-
-**Never narrate:** forbidden phrases: "I will...", "Let me...", "I'm going to...", "Once I have...". Act, don't explain.
-
-**Questions:** use ask_user tool — never write questions as plain text.
-
-**Bash:** use Windows commands (dir, type, powershell). [exit_code N≠0] means failure — diagnose and retry.
+- Think in <thinking>...</thinking>, then immediately emit a <tool_call> — no prose between them.
+- TOOL FIRST: anything involving files, code, or system state → call a tool. Never answer from memory about this codebase.
+- Read before write: always read_file before editing.
+- After editing: verify with read_file. For .py run `python -m py_compile`, for .js run `node --check`.
+- Minimal edits: change only what is asked.
+- Questions: use ask_user, never plain text.
+- Bash: Windows commands. [exit_code N≠0] = failure, diagnose and retry.
+- WHEN user mention KS (Knowledge Source) sempre busque pelo knowledge source: com slug=ever-test-01
+- ALWAYS when necessary save/remain/store some important information, save it into a new object in the KS (Knowledge Source)
+- WHEN user request some business information or technical specific information that you don't know, search in KS (Knowledge Source)
 
 ## Tools
-
-read_file(path, start_line?, end_line?) — line-numbered file view
-edit_file(path, old_str, new_str) — exact string replace; old_str="" to create
-replace_lines(path, start_line, end_line, new_content) — line-range replace, encoding-safe
-insert_after_line(path, line_number, new_content) — insert without replacing
-find_file(name, path?) — recursively find files by glob name under path (searches ALL subdirectories)
-list_files(path?, pattern?, max_depth?) — list directory; avoid pattern="**/*"; always use max_depth=10 or higher
-search_in_files(pattern, path, recursively?) — search inside file contents for a regex or literal string; recursively=true (default) walks all subdirectories
-search_html(path, selector) — CSS selector search in HTML, returns line numbers
-edit_html_attr(path, selector, attribute, value) — set HTML attribute safely
-search_xml(path, xpath) — XPath search in XML, returns line numbers
-edit_xml_attr(path, xpath, attribute, value) — set XML attribute
-search_python(path, name, kind?) — find Python def/class by name via AST (kind: function|class|import|any)
-search_java(path, name, kind?) — find Java class/method by name (kind: class|method|field|annotation|any)
-search_js(path, name, kind?) — find JS/TS function/class by name (kind: function|arrow|class|method|import|export|any)
-bash(command, timeout?) — run shell command
-ask_user(question, options) — ask user with up to 3 options
-web_search(query, max_results?) — DuckDuckGo search
-fetch_page(url, selector?) — fetch web page text
-list_knowledge_sources(page?, size?) — list KS
-get_ks_objects(slug, page?, size?) — KS documents
-get_ks_details(slug) — KS metadata
-create_knowledge_source(name, slug, description?) — create KS
-upload_to_knowledge_source(file_path, ks_slug) — upload to KS
+read_file(path, start_line?, end_line?)
+edit_file(path, old_str, new_str) — old_str="" to create file
+replace_lines(path, start_line, end_line, new_content) — use when edit_file fails (special chars/emojis)
+insert_after_line(path, line_number, new_content)
+find_file(name, path?)
+list_files(path?, pattern?, max_depth?)
+search_in_files(pattern, path, recursively?)
+search_html(path, selector) / edit_html_attr(path, selector, attribute, value)
+search_xml(path, xpath) / edit_xml_attr(path, xpath, attribute, value)
+search_python(path, name, kind?) / search_java(path, name, kind?) / search_js(path, name, kind?)
+bash(command, timeout?)
+ask_user(question, options)
+web_search(query, max_results?) / fetch_page(url, selector?)
+list_knowledge_sources() / get_ks_objects(slug) / get_ks_details(slug)
+create_knowledge_source(name, slug) / upload_to_knowledge_source(file_path, ks_slug)
 """
 
 
@@ -394,9 +325,8 @@ def build_system_prompt() -> str:
 
 def _tool_reminder() -> str:
     return (
-        f"[System reminder] cwd: {os.getcwd()} | "
-        "Call tools directly — never ask the user to run anything manually. "
-        "After </thinking> emit a <tool_call> immediately, no prose. "
+        f"cwd: {os.getcwd()} | "
+        "Call a tool now — no prose. "
         'Format: <tool_call><name>TOOL_NAME</name><parameters>{"key": "value"}</parameters></tool_call>'
     )
 
@@ -481,7 +411,16 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _build_first_prompt(self, user_message: str) -> str:
-        return f"{build_system_prompt()}\n\n---\n\nUser request: {user_message}"
+        base = build_system_prompt()
+        if self._history:
+            hist_lines = []
+            for h in self._history[-8:]:
+                hist_lines.append(f"User: {h['user']}")
+                # No truncation — the last response must be fully available
+                hist_lines.append(f"Assistant: {h['assistant']}")
+            history_block = "\n".join(hist_lines)
+            return f"{base}\n\n## Previous conversation\n{history_block}\n\n---\n\nUser request: {user_message}"
+        return f"{base}\n\n---\n\nUser request: {user_message}"
 
     def _build_followup_prompt(self, user_message: str) -> str:
         return f"{_tool_reminder()}\n\n{user_message}"
@@ -489,9 +428,8 @@ class Agent:
     def _call_api(self, prompt: str, streaming: bool = False):
         from api_client import chat_nonstream, chat_stream
 
-        is_first = not self._initialized
         full_prompt = (
-            self._build_first_prompt(prompt) if is_first
+            self._build_first_prompt(prompt) if not self._initialized
             else self._build_followup_prompt(prompt)
         )
 
@@ -524,9 +462,8 @@ class Agent:
         import logger
         from api_client import chat_stream
 
-        is_first = not self._initialized
         full_prompt = (
-            self._build_first_prompt(prompt) if is_first
+            self._build_first_prompt(prompt) if not self._initialized
             else self._build_followup_prompt(prompt)
         )
 
@@ -794,6 +731,10 @@ class Agent:
         If MAX_TOOL_ITERATIONS is hit, automatically continues with full execution context.
         Returns the final text response.
         """
+        # Fresh conversation ID each run — history is injected manually, no server-side dependency
+        self.conversation_id = str(ULID())
+        self._initialized = False
+        self._start_of_new_turn = False
         execution_log: list[str] = []
 
         result, context_summary, execution_log = self._agent_loop(
@@ -804,7 +745,9 @@ class Agent:
         )
 
         if result is not None:
-            return TOOL_RESULT_RE.sub("", result).strip()
+            final = TOOL_RESULT_RE.sub("", result).strip()
+            self._history.append({"user": user_message, "assistant": final})
+            return final
 
         # Hit the iteration limit — build a continuation prompt with the real execution history
         done_summary = "\n".join(execution_log) if execution_log else "  (no tools executed)"
@@ -828,11 +771,15 @@ class Agent:
         )
 
         if result is not None:
-            return TOOL_RESULT_RE.sub("", result).strip()
-        return (
+            final = TOOL_RESULT_RE.sub("", result).strip()
+            self._history.append({"user": user_message, "assistant": final})
+            return final
+        final = (
             "Task incomplete after extended iterations. "
             "Review what was done and continue manually if needed."
         )
+        self._history.append({"user": user_message, "assistant": final})
+        return final
 
     def stream(self, user_message: str) -> Generator[str, None, None]:
         """Streaming-compatible agent loop (tool turns are non-streaming)."""

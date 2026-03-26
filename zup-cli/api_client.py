@@ -2,7 +2,7 @@ import json
 import time
 import httpx
 from typing import Generator, Optional
-from auth import get_token
+from auth import get_token, invalidate_token
 from config import get_config, DEFAULT_AGENT_ID
 
 _RETRY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError)
@@ -13,9 +13,15 @@ _RETRY_BACKOFF = [1, 2, 4, 8, 16]  # seconds between attempts
 def _should_retry(exc: Exception) -> bool:
     if isinstance(exc, _RETRY_ERRORS):
         return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (502, 503, 504):
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (401, 502, 503, 504):
         return True
     return False
+
+
+def _maybe_refresh_token(exc: Exception) -> None:
+    """Invalidate cached token on 401 so the next attempt fetches a fresh one."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+        invalidate_token()
 
 CHAT_BASE = "https://genai-inference-app.stackspot.com"
 DATA_BASE = "https://data-integration-api.stackspot.com"
@@ -29,6 +35,15 @@ def _headers(accept: str = "application/json") -> dict:
         "Accept": accept,
         "x-request-origin": "chat",
     }
+
+
+def _fetch_all_ks_ids() -> list[str]:
+    """Return IDs of all personal knowledge sources."""
+    try:
+        data = list_knowledge_sources(page=1, size=100)
+        return [ks["id"] for ks in data.get("items", []) if ks.get("id")]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +71,7 @@ def chat_nonstream(
         "conversation_id": conversation_id,
         "upload_ids": [],
         "selected_model": selected_model,
+        "knowledge_sources": _fetch_all_ks_ids(),
     }
 
     import logger
@@ -74,6 +90,7 @@ def chat_nonstream(
             if not _should_retry(exc) or attempt == _MAX_RETRIES - 1:
                 raise
             wait = _RETRY_BACKOFF[attempt]
+            _maybe_refresh_token(exc)
             logger.log_error("chat_nonstream retry", exc)
             time.sleep(wait)
     raise last_exc
@@ -93,13 +110,14 @@ def chat_stream(
         "user_prompt": prompt,
         "streaming": True,
         "show_chat_processing_state": False,
-        "return_ks_in_response": False,
-        "deep_search_ks": False,
+        "return_ks_in_response": True,
+        "deep_search_ks": True,
         "stackspot_knowledge": False,
         "use_conversation": True,
         "conversation_id": conversation_id,
         "upload_ids": [],
         "selected_model": selected_model,
+        "knowledge_sources": _fetch_all_ks_ids(),
     }
 
     headers = _headers(accept="text/event-stream")
@@ -131,6 +149,7 @@ def chat_stream(
             if not _should_retry(exc) or attempt == _MAX_RETRIES - 1:
                 raise
             wait = _RETRY_BACKOFF[attempt]
+            _maybe_refresh_token(exc)
             _logger.log_error("chat_stream retry", exc) if hasattr(_logger, "log_error") else None
             time.sleep(wait)
 
@@ -172,7 +191,7 @@ def list_models() -> list:
 # Knowledge Sources
 # ---------------------------------------------------------------------------
 
-def list_knowledge_sources(page: int = 1, size: int = 10, visibility: str = "account") -> dict:
+def list_knowledge_sources(page: int = 1, size: int = 10, visibility: str = "personal") -> dict:
     resp = httpx.get(
         f"{KS_BASE}/v2/knowledge-sources",
         headers=_headers(),
@@ -187,7 +206,7 @@ def get_ks_objects(slug: str, page: int = 1, size: int = 20) -> dict:
     resp = httpx.get(
         f"{KS_BASE}/v2/knowledge-sources/{slug}/objects",
         headers=_headers(),
-        params={"page": page, "size": size, "content_limit": 5000},
+        params={"page": page, "size": size, "content_limit": 1000},
         timeout=30.0,
     )
     resp.raise_for_status()
@@ -290,7 +309,24 @@ def upload_file_to_ks(local_path: str, ks_slug: str) -> dict:
     logger._block("KS UPLOAD step2 response", f"status={s3_resp.status_code}\n{s3_resp.text[:2000]}")
     s3_resp.raise_for_status()
 
-    # Poll until done
+    # Step 3: trigger split
+    _split_payload = {
+        "split_overlap": 0,
+        "split_quantity": 100,
+        "split_strategy": "LINES_QUANTITY",
+        "embed_after_split": False,
+    }
+    logger._block("KS UPLOAD step3 request", f"POST {DATA_BASE}/v1/file-upload/{upload_id}/split\n{_json.dumps(_split_payload, indent=2)}")
+    split_resp = httpx.post(
+        f"{DATA_BASE}/v1/file-upload/{upload_id}/split",
+        headers=_headers(),
+        json=_split_payload,
+        timeout=30.0,
+    )
+    logger._block("KS UPLOAD step3 response", f"status={split_resp.status_code}\n{split_resp.text}")
+    split_resp.raise_for_status()
+
+    # Poll until SPLITTED (or terminal state)
     for i in range(30):
         time.sleep(3)
         poll = httpx.get(
@@ -302,9 +338,42 @@ def upload_file_to_ks(local_path: str, ks_slug: str) -> dict:
         status = poll.json()
         state = status.get("status", "").upper()
         logger._block(f"KS UPLOAD poll [{i+1}/30]", f"state={state!r}\n{_json.dumps(status, indent=2, default=str)}")
+        if state == "SPLITTED":
+            break
         if state in ("COMPLETED", "EMBEDDED", "DONE", "INDEXED"):
             return status
         if state == "FAILED":
             raise RuntimeError(f"Upload processing failed: {status}")
+    else:
+        return {"status": "PROCESSING", "upload_id": upload_id}
+
+    # Step 4: create knowledge objects
+    _ko_payload = {"split_strategy": "SYNTACTIC", "split_quantity": None, "split_overlap": 0}
+    logger._block("KS UPLOAD step4 request", f"POST {DATA_BASE}/v1/file-upload/{upload_id}/knowledge-objects\n{_json.dumps(_ko_payload, indent=2)}")
+    ko_resp = httpx.post(
+        f"{DATA_BASE}/v1/file-upload/{upload_id}/knowledge-objects",
+        headers=_headers(),
+        json=_ko_payload,
+        timeout=30.0,
+    )
+    logger._block("KS UPLOAD step4 response", f"status={ko_resp.status_code}\n{ko_resp.text}")
+    ko_resp.raise_for_status()
+
+    # Poll until INDEXED
+    for i in range(30):
+        time.sleep(3)
+        poll = httpx.get(
+            f"{DATA_BASE}/v1/file-upload/{upload_id}",
+            headers=_headers(),
+            timeout=30.0,
+        )
+        poll.raise_for_status()
+        status = poll.json()
+        state = status.get("status", "").upper()
+        logger._block(f"KS UPLOAD poll2 [{i+1}/30]", f"state={state!r}\n{_json.dumps(status, indent=2, default=str)}")
+        if state in ("INDEXED", "COMPLETED", "EMBEDDED", "DONE"):
+            return status
+        if state == "FAILED":
+            raise RuntimeError(f"Knowledge objects processing failed: {status}")
 
     return {"status": "PROCESSING", "upload_id": upload_id}

@@ -403,6 +403,12 @@ def run_auto(prompt: str, agent) -> str:
             agent_module.TOOL_REGISTRY["ask_user"] = original_ask_user
         elif "ask_user" in agent_module.TOOL_REGISTRY:
             del agent_module.TOOL_REGISTRY["ask_user"]
+        # Sync worker history back to session agent so next message has full context
+        try:
+            for entry in worker._history:
+                agent._history.append(entry)
+        except NameError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +611,12 @@ def run_reason(prompt: str, agent, use_llm_for_ask_user: bool = False) -> str:
             agent_module.TOOL_REGISTRY["ask_user"] = original_ask_user
         elif "ask_user" in agent_module.TOOL_REGISTRY:
             del agent_module.TOOL_REGISTRY["ask_user"]
+        # Sync worker history back to session agent so next message has full context
+        try:
+            for entry in worker._history:
+                agent._history.append(entry)
+        except NameError:
+            pass
 
 
 # ---------------------------------------------------------------------------

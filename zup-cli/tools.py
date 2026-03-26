@@ -763,6 +763,20 @@ _FETCH_CHAR_LIMIT = 12_000  # max chars returned from a single page
 _LABELS = ["a", "b", "c", "d"]
 
 
+def _get_proxies() -> dict | None:
+    """Read proxy settings from environment variables."""
+    http  = os.environ.get("HTTP_PROXY")  or os.environ.get("http_proxy")
+    https = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if not http and not https:
+        return None
+    proxies: dict[str, str] = {}
+    if http:
+        proxies["http"] = http
+    if https:
+        proxies["https"] = https
+    return proxies
+
+
 def ask_user(question: str, options: list) -> str:
     """
     Show an interactive multiple-choice question to the user.
@@ -867,13 +881,22 @@ def ask_user(question: str, options: list) -> str:
 def web_search(query: str, max_results: int = 6) -> str:
     """Search the web using DuckDuckGo and return a list of results."""
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
     except ImportError:
-        return "Error: 'duckduckgo-search' is not installed. Run: pip install duckduckgo-search"
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            return "Error: 'ddgs' is not installed. Run: pip install ddgs"
 
+    proxies = _get_proxies()
+    proxy = (proxies or {}).get("https") or (proxies or {}).get("http")
     try:
-        with DDGS() as ddgs:
-            hits = list(ddgs.text(query, max_results=max_results))
+        try:
+            with DDGS(proxy=proxy) as ddgs:
+                hits = list(ddgs.text(query, max_results=max_results))
+        except TypeError:
+            with DDGS(proxies=proxies) as ddgs:
+                hits = list(ddgs.text(query, max_results=max_results))
     except Exception as e:
         return f"Error searching the web: {e}"
 
@@ -902,7 +925,7 @@ def fetch_page(url: str, selector: str = "") -> str:
 
     try:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; zup-cli/1.0)"}
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=15, proxies=_get_proxies())
         resp.raise_for_status()
     except Exception as e:
         return f"Error fetching {url}: {e}"
