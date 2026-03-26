@@ -303,7 +303,6 @@
         flex: 1;
         display: flex;
         flex-direction: column;
-        overflow: hidden;
       }
 
       /* Topbar */
@@ -559,7 +558,7 @@
         border: 1px solid #2a2a3a;
         border-radius: 8px;
         background: var(--tool-bg);
-        overflow: hidden;
+        overflow: scroll;
         font-size: 12.5px;
       }
       .tool-header {
@@ -625,7 +624,7 @@
         border-radius: 8px;
         background: var(--think-bg);
         font-size: 12px;
-        overflow: hidden;
+        overflow: scroll;
       }
       .think-header {
         display: flex;
@@ -874,7 +873,7 @@
       #tab-files {
         padding: 0 !important;
         gap: 0 !important;
-        overflow: hidden !important;
+        overflow: scroll !important;
         flex-direction: row !important;
       }
       .ft-sidebar {
@@ -941,7 +940,7 @@
       /* ── Files tab: diff viewer ── */
       .ft-diff {
         flex: 1;
-        overflow: hidden;
+        overflow: scroll;
         display: flex;
         flex-direction: column;
         min-width: 0;
@@ -968,7 +967,7 @@
       }
       .ft-diff-path {
         flex: 1;
-        overflow: hidden;
+        overflow: scroll;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
@@ -1060,7 +1059,7 @@
         border: 1px solid #1e1e2e;
         border-radius: 8px;
         background: #111;
-        overflow: hidden;
+        overflow: scroll;
         margin-bottom: 8px;
       }
       .tool-entry-header {
@@ -1422,7 +1421,6 @@
       .tl-canvas-wrap {
         flex: 1;
         overflow-x: auto;
-        overflow-y: hidden;
         position: relative;
       }
 
@@ -1764,12 +1762,7 @@
         <!-- Task view (hidden until task selected) -->
         <div
           id="task-view"
-          style="
-            display: none;
-            flex: 1;
-            flex-direction: column;
-            overflow: hidden;
-          "
+          style="display: none; flex: 1; flex-direction: column"
         >
           <!-- Topbar -->
           <div id="topbar">
