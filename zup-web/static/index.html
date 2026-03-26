@@ -91,6 +91,8 @@
   /* Tab panes */
   #tab-output, #tab-files, #tab-tools { flex: 1; overflow-y: auto; padding: 18px 20px; display: none; flex-direction: column; gap: 12px; }
   #tab-output.active, #tab-files.active, #tab-tools.active { display: flex; }
+  #tab-timeline { flex: 1; display: none; flex-direction: column; overflow: hidden; background: #080808; }
+  #tab-timeline.active { display: flex; }
 
   /* Empty state */
   #no-task { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); gap: 14px; }
@@ -256,6 +258,76 @@
   #btn-create-task { padding: 8px 22px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .15s; }
   #btn-create-task:hover { background: var(--accent2); }
 
+  /* ── Timeline tab ── */
+  .tl-controls { display:flex; align-items:center; gap:10px; padding:7px 14px; background:#0f0f0f; border-bottom:1px solid #1e1e1e; flex-shrink:0; }
+  .tl-btn { background:none; border:1px solid #2a2a2a; color:#888; border-radius:5px; width:26px; height:26px; cursor:pointer; font-size:11px; display:flex; align-items:center; justify-content:center; transition:all .15s; flex-shrink:0; }
+  .tl-btn:hover { background:#1a1a1a; border-color:#444; color:#ccc; }
+  .tl-btn.active { color:var(--accent); border-color:var(--accent); background:#1a1a2a; }
+  .tl-time { font-family:'Cascadia Code','Fira Code',monospace; font-size:11px; color:#555; min-width:60px; }
+  .tl-sep { width:1px; height:18px; background:#2a2a2a; flex-shrink:0; }
+  .tl-speed { font-size:10px; color:#444; cursor:pointer; padding:2px 6px; border:1px solid #222; border-radius:3px; }
+  .tl-speed:hover { color:#888; border-color:#444; }
+  .tl-total-label { font-size:10px; color:#333; }
+
+  /* Timeline body */
+  .tl-body { flex:1; display:flex; overflow:hidden; position:relative; }
+  .tl-labels { width:86px; min-width:86px; flex-shrink:0; background:#0a0a0a; border-right:1px solid #1a1a1a; display:flex; flex-direction:column; }
+  .tl-labels-ruler-spacer { height:24px; border-bottom:1px solid #1a1a1a; background:#0f0f0f; }
+  .tl-track-label { height:40px; display:flex; align-items:center; padding:0 10px; font-size:9.5px; font-weight:700; color:#383838; letter-spacing:.6px; text-transform:uppercase; border-bottom:1px solid #111; }
+  .tl-canvas-wrap { flex:1; overflow-x:auto; overflow-y:hidden; position:relative; }
+
+  /* Ruler */
+  .tl-ruler { height:24px; background:#0f0f0f; border-bottom:1px solid #1a1a1a; position:relative; flex-shrink:0; user-select:none; cursor:crosshair; }
+  .tl-ruler-tick { position:absolute; bottom:0; background:#252525; }
+  .tl-ruler-tick.major { width:1px; height:10px; background:#383838; }
+  .tl-ruler-tick.minor { width:1px; height:5px; }
+  .tl-ruler-label { position:absolute; bottom:11px; font-size:8.5px; color:#404040; transform:translateX(-50%); font-family:monospace; pointer-events:none; }
+
+  /* Tracks */
+  .tl-tracks { position:relative; }
+  .tl-track { height:40px; border-bottom:1px solid #111; position:relative; background:linear-gradient(180deg,#0d0d0d 0%,#0a0a0a 100%); }
+  .tl-track:nth-child(odd) { background:linear-gradient(180deg,#0f0f0f 0%,#0c0c0c 100%); }
+
+  /* Clips */
+  .tl-clip { position:absolute; top:5px; height:30px; border-radius:4px; cursor:pointer; display:flex; align-items:center; overflow:hidden; padding:0 7px; font-size:9.5px; font-weight:600; white-space:nowrap; border:1px solid transparent; transition:filter .12s, box-shadow .12s; min-width:22px; box-shadow:0 1px 3px rgba(0,0,0,.5); user-select:none; }
+  .tl-clip:hover { filter:brightness(1.35); box-shadow:0 2px 8px rgba(0,0,0,.7); }
+  .tl-clip.selected { outline:2px solid rgba(255,255,255,.7); outline-offset:1px; filter:brightness(1.25); }
+  .tl-clip-icon { font-size:11px; margin-right:4px; flex-shrink:0; }
+  .tl-clip-text { overflow:hidden; text-overflow:ellipsis; }
+
+  /* Clip colors */
+  .clip-user     { background:linear-gradient(135deg,#1c1c45,#252550); color:#8b9fff; border-color:#2e2e60; }
+  .clip-response { background:linear-gradient(135deg,#0d2a1a,#123520); color:#3ecf8e; border-color:#1a4a2a; }
+  .clip-tool     { background:linear-gradient(135deg,#1a1a30,#202040); color:#a78bfa; border-color:#2a2a55; }
+  .clip-file     { background:linear-gradient(135deg,#2a1a08,#352010); color:#f59e0b; border-color:#50310a; }
+  .clip-thinking { background:linear-gradient(135deg,#151515,#1a1a1a); color:#555; border-color:#252525; }
+  .clip-info     { background:linear-gradient(135deg,#101010,#141414); color:#444; border-color:#1e1e1e; }
+  .clip-error    { background:linear-gradient(135deg,#1f0a0a,#280d0d); color:#ef4444; border-color:#3a1010; }
+  .clip-ask      { background:linear-gradient(135deg,#1f1600,#2a1d00); color:#f59e0b; border-color:#50400a; }
+  .clip-stream   { background:linear-gradient(135deg,#0d1f2a,#102535); color:#60a5fa; border-color:#1a3a50; }
+  .clip-stream .tl-clip-icon { animation: tl-pulse .8s ease-in-out infinite; }
+  @keyframes tl-pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .tl-sources { margin-top:8px; padding-top:8px; border-top:1px solid #1e1e1e; }
+  .tl-sources-title { font-size:9.5px; color:#383838; font-weight:700; letter-spacing:.5px; text-transform:uppercase; margin-bottom:6px; }
+  .tl-source-row { display:flex; align-items:center; gap:6px; padding:3px 0; font-size:11px; }
+  .tl-source-icon { font-size:12px; flex-shrink:0; }
+  .tl-source-name { color:#7c8fff; font-weight:600; }
+  .tl-source-meta { color:#333; font-size:10.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* Playhead */
+  .tl-playhead { position:absolute; top:0; width:2px; background:rgba(255,255,255,.9); z-index:20; pointer-events:none; box-shadow:0 0 8px rgba(255,255,255,.3); }
+  .tl-playhead-head { position:absolute; top:-2px; left:-5px; width:12px; height:12px; background:#fff; clip-path:polygon(50% 100%,0 0,100% 0); box-shadow:0 0 6px rgba(255,255,255,.6); }
+
+  /* Detail panel */
+  .tl-detail { height:155px; flex-shrink:0; border-top:1px solid #1a1a1a; background:#0a0a0a; display:flex; flex-direction:column; overflow:hidden; }
+  .tl-detail-header { display:flex; align-items:center; gap:10px; padding:6px 14px; border-bottom:1px solid #151515; flex-shrink:0; background:#0d0d0d; }
+  .tl-detail-type-icon { font-size:13px; }
+  .tl-detail-type { font-size:11px; font-weight:700; letter-spacing:.3px; }
+  .tl-detail-ts { font-size:10px; color:#333; font-family:monospace; margin-left:auto; }
+  .tl-detail-idx { font-size:10px; color:#2a2a2a; font-family:monospace; }
+  .tl-detail-body { flex:1; overflow-y:auto; padding:8px 14px; font-size:11.5px; font-family:'Cascadia Code','Fira Code',monospace; white-space:pre-wrap; word-break:break-all; line-height:1.55; color:#555; }
+  .tl-empty { flex:1; display:flex; align-items:center; justify-content:center; color:#252525; font-size:12px; flex-direction:column; gap:8px; }
+
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
@@ -303,12 +375,14 @@
         <button class="tab-btn active" data-tab="output">Output</button>
         <button class="tab-btn" data-tab="tools">Tools <span id="tools-count-badge" class="tab-badge" style="display:none">0</span></button>
         <button class="tab-btn" data-tab="files">Files <span id="files-count-badge" class="tab-badge" style="display:none">0</span></button>
+        <button class="tab-btn" data-tab="timeline">Timeline <span id="timeline-count-badge" class="tab-badge" style="display:none">0</span></button>
       </div>
 
       <!-- Tab panes -->
       <div id="tab-output" class="active"></div>
       <div id="tab-tools"></div>
       <div id="tab-files"></div>
+      <div id="tab-timeline"></div>
 
       <!-- Follow-up input -->
       <div id="input-area">
@@ -364,6 +438,8 @@ const state = {
   taskFiles: {},          // id -> [{ op, path, ts, tool, params, toolIdx }]  (fs activity)
   activeFile: {},         // id -> currently selected file path in Files tab
   queuedCount: {},        // id -> number of queued messages
+  taskTimeline: {},       // id -> { events: [], playIdx: -1, playing: false, playTimer: null, speed: 1 }
+  taskCurrentSources: {}, // id -> [{ name, params, path?, op? }] — tools used in current generation
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -488,6 +564,7 @@ function selectTask(id) {
   renderOutput(id);
   renderToolsTab(id);
   renderFilesTab(id);
+  if (currentTab === 'timeline') renderTimelineTab(id);
   ensureSocket(id);
   updateFollowupBtn();
   updateTabBadges(id);
@@ -507,15 +584,20 @@ document.getElementById('tab-bar').addEventListener('click', (e) => {
   document.getElementById('tab-output').classList.toggle('active', tab === 'output');
   document.getElementById('tab-tools').classList.toggle('active', tab === 'tools');
   document.getElementById('tab-files').classList.toggle('active', tab === 'files');
+  document.getElementById('tab-timeline').classList.toggle('active', tab === 'timeline');
+  if (tab === 'timeline' && state.activeId) renderTimelineTab(state.activeId);
 });
 
 function updateTabBadges(id) {
   const toolsCount = (state.taskTools[id] || []).length;
   const filesCount = (state.taskFiles[id] || []).length;
+  const tlCount    = (state.taskTimeline[id]?.events || []).length;
   const tb = document.getElementById('tools-count-badge');
   const fb = document.getElementById('files-count-badge');
+  const cb = document.getElementById('timeline-count-badge');
   tb.textContent = toolsCount; tb.style.display = toolsCount ? '' : 'none';
   fb.textContent = filesCount; fb.style.display = filesCount ? '' : 'none';
+  if (cb) { cb.textContent = tlCount; cb.style.display = tlCount ? '' : 'none'; }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -699,6 +781,9 @@ function trackFileOp(id, name, params) {
   if (!state.taskFiles[id]) state.taskFiles[id] = [];
   const toolIdx = (state.taskTools[id] || []).length - 1;
   state.taskFiles[id].push({ op, path, ts: _ts(), tool: name, params, toolIdx });
+  // Also add to timeline + register as knowledge source
+  addTimelineEvent(id, 'file_op', { op, path, tool: name, ts: _ts() });
+  _tlCurrentSources(id).push({ type: 'file_op', op, path, name });
   if (id === state.activeId) refreshFilesTab(id);
 }
 
@@ -992,6 +1077,13 @@ function sendAskUser(id, blockEl, answer) {
 function handleEvent(id, event) {
   const convo = convoFor(id);
 
+  // ── Timeline tracking ──────────────────────────────────────────────────────
+  // 'response' and 'llm_start' are handled specially below (stream_live promotion)
+  const _TL_SKIP = new Set(['ping','connected','history','chunk','done','tokens','llm_start','activity','bash_line','file_op','response']);
+  if (!_TL_SKIP.has(event.type) && !event.replay) {
+    addTimelineEvent(id, event.type, event);
+  }
+
   switch (event.type) {
     case 'ping': case 'connected': break;
 
@@ -1034,6 +1126,18 @@ function handleEvent(id, event) {
 
     case 'chunk': {
       convo.pendingText += event.text;
+      // Update live stream clip text + sources label
+      if (!event.replay) {
+        const tl = tlFor(id);
+        for (let i = tl.events.length - 1; i >= 0; i--) {
+          if (tl.events[i].type === 'stream_live') {
+            tl.events[i].data.text = (tl.events[i].data.text || '') + event.text;
+            tl.events[i].data.sources = [..._tlCurrentSources(id)];
+            _tlUpdateClip(id, i);
+            break;
+          }
+        }
+      }
       break;
     }
 
@@ -1050,6 +1154,19 @@ function handleEvent(id, event) {
       appendNode(id, block);
       trackToolUse(id, event.name, event.params);
       trackFileOp(id, event.name, event.params);
+      // Register as knowledge source for the current generation
+      if (!event.replay) {
+        _tlCurrentSources(id).push({ type: 'tool', name: event.name, params: event.params });
+        // Refresh stream_live clip to show updated source count
+        const tl = tlFor(id);
+        for (let i = tl.events.length - 1; i >= 0; i--) {
+          if (tl.events[i].type === 'stream_live') {
+            tl.events[i].data.sources = [..._tlCurrentSources(id)];
+            _tlUpdateClip(id, i);
+            break;
+          }
+        }
+      }
       break;
     }
 
@@ -1060,7 +1177,15 @@ function handleEvent(id, event) {
       break;
     }
 
-    case 'llm_start': { if (!event.replay) _attachGenRow(id); break; }
+    case 'llm_start': {
+      if (!event.replay) {
+        _attachGenRow(id);
+        // Start a live streaming clip in the timeline
+        state.taskCurrentSources[id] = [];
+        addTimelineEvent(id, 'stream_live', { text: '', sources: [], active: true });
+      }
+      break;
+    }
 
     case 'activity': {
       if (!event.replay) {
@@ -1146,6 +1271,23 @@ function handleEvent(id, event) {
       finalizeStream(id);
       appendNode(id, makeResponseNode(event.text));
       if (id === state.activeId) document.getElementById('activity-hint').textContent = '';
+      // Promote stream_live → response with captured sources
+      if (!event.replay) {
+        const sources = [..._tlCurrentSources(id)];
+        state.taskCurrentSources[id] = [];
+        const tl = tlFor(id);
+        let promoted = false;
+        for (let i = tl.events.length - 1; i >= 0; i--) {
+          if (tl.events[i].type === 'stream_live') {
+            tl.events[i].type = 'response';
+            tl.events[i].data = { ...event, sources };
+            _tlUpdateClip(id, i);
+            promoted = true;
+            break;
+          }
+        }
+        if (!promoted) addTimelineEvent(id, 'response', { ...event, sources });
+      }
       break;
     }
 
@@ -1222,9 +1364,11 @@ async function deleteTask(id) {
   try {
     await api('DELETE', `/sessions/${id}`);
     const ws = state.sockets[id]; if (ws) ws.close();
+    tlStopPlay(id);
     delete state.tasks[id]; delete state.sockets[id]; delete state.taskConvos[id];
     delete state.taskDescs[id]; delete state.waitingInput[id];
     delete state.taskTools[id]; delete state.taskFiles[id]; delete state.activeFile[id];
+    delete state.taskTimeline[id]; delete state.taskCurrentSources[id];
     if (state.activeId === id) {
       state.activeId = null;
       document.getElementById('task-view').style.display = 'none';
@@ -1327,6 +1471,401 @@ function closeModal() {
   document.getElementById('task-desc-input').value = '';
   document.getElementById('task-name-input').value = '';
   document.getElementById('agent-input').value = '@auto';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Timeline
+// ═══════════════════════════════════════════════════════════════════
+const TL_TRACKS = [
+  { label: 'Messages', types: new Set(['user_message','user_message_queued','response','stream_live','ask_user','confirm_request']) },
+  { label: 'Tools',    types: new Set(['tool_use','tool_result']) },
+  { label: 'Files',    types: new Set(['file_op']) },
+  { label: 'Thinking', types: new Set(['thinking']) },
+  { label: 'System',   types: new Set(['info','error']) },
+];
+const TL_TYPE_TRACK = {};
+TL_TRACKS.forEach((t, i) => t.types.forEach(type => TL_TYPE_TRACK[type] = i));
+
+const TL_CLIP_CLASS = {
+  user_message: 'clip-user', user_message_queued: 'clip-user',
+  response: 'clip-response', stream_live: 'clip-stream',
+  ask_user: 'clip-ask', confirm_request: 'clip-ask',
+  tool_use: 'clip-tool', tool_result: 'clip-tool',
+  file_op: 'clip-file', thinking: 'clip-thinking',
+  info: 'clip-info', error: 'clip-error',
+};
+const TL_ICONS = {
+  user_message: '💬', user_message_queued: '📩', response: '🤖', stream_live: '📡',
+  ask_user: '⚡', confirm_request: '⚠', tool_use: '🔧', tool_result: '✓',
+  file_op: '📁', thinking: '🧠', info: 'ℹ', error: '⚠',
+};
+const TL_TYPE_COLORS = {
+  'clip-user': '#7c8fff', 'clip-response': '#3ecf8e', 'clip-tool': '#a78bfa',
+  'clip-file': '#f59e0b', 'clip-thinking': '#555', 'clip-info': '#444',
+  'clip-error': '#ef4444', 'clip-ask': '#f59e0b', 'clip-stream': '#60a5fa',
+};
+const TL_CLIP_W = 88; // px per event slot
+const TL_TRACK_H = 40;
+
+function tlFor(id) {
+  if (!state.taskTimeline[id]) state.taskTimeline[id] = { events: [], playIdx: -1, playing: false, playTimer: null, speed: 1 };
+  return state.taskTimeline[id];
+}
+
+function _tlCurrentSources(id) {
+  if (!state.taskCurrentSources[id]) state.taskCurrentSources[id] = [];
+  return state.taskCurrentSources[id];
+}
+
+// Update a single clip's DOM element in-place (type, label, class)
+function _tlUpdateClip(id, evtIdx) {
+  const tracks = document.getElementById('tl-tracks-' + id);
+  if (!tracks) return;
+  const clipEl = tracks.querySelector(`.tl-clip[data-evt-idx="${evtIdx}"]`);
+  if (!clipEl) return;
+  const tl = tlFor(id);
+  const evt = tl.events[evtIdx];
+  if (!evt) return;
+  const cls = TL_CLIP_CLASS[evt.type] || 'clip-info';
+  clipEl.className = 'tl-clip ' + cls + (tl.playIdx === evtIdx ? ' selected' : '');
+  const icon = TL_ICONS[evt.type] || '•';
+  const label = _tlClipLabel(evt);
+  clipEl.innerHTML = `<span class="tl-clip-icon">${icon}</span><span class="tl-clip-text">${esc(label)}</span>`;
+  clipEl.title = label;
+  // If this is the selected event, refresh detail panel
+  if (id === state.activeId && tl.playIdx === evtIdx && currentTab === 'timeline') {
+    _tlRenderDetail(id, evtIdx);
+  }
+}
+
+function addTimelineEvent(id, type, data) {
+  const tl = tlFor(id);
+  tl.events.push({ type, data: { ...data }, ts: data.ts || _ts() });
+  updateTabBadges(id);
+  if (id === state.activeId && currentTab === 'timeline') _tlRefreshLive(id);
+}
+
+function _tlRefreshLive(id) {
+  // Lightweight append: re-render if open
+  renderTimelineTab(id);
+}
+
+function _tlClipLabel(evt) {
+  const d = evt.data;
+  if (evt.type === 'stream_live') {
+    const srcN = d.sources?.length || 0;
+    const preview = (d.text || '').trim().slice(0, 22);
+    return (preview || 'streaming…') + (srcN ? ` [${srcN} src]` : '');
+  }
+  if (evt.type === 'response') {
+    const srcN = d.sources?.length || 0;
+    const preview = String(d.text || '').trim().slice(0, 22);
+    return preview + (srcN ? ` · ${srcN} src` : '');
+  }
+  if (evt.type === 'tool_use' || evt.type === 'tool_result') return d.name || evt.type;
+  if (evt.type === 'file_op') return (d.op || '') + ' ' + (d.path || '').split(/[\\/]/).pop();
+  if (d.text) return String(d.text).slice(0, 28);
+  if (d.message) return String(d.message).slice(0, 28);
+  if (d.question) return String(d.question).slice(0, 28);
+  return evt.type;
+}
+
+function renderTimelineTab(id) {
+  const wrap = document.getElementById('tab-timeline');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const tl = tlFor(id);
+  const events = tl.events;
+
+  if (!events.length) {
+    const empty = document.createElement('div');
+    empty.className = 'tl-empty';
+    empty.innerHTML = '<div style="font-size:32px;opacity:.15">🎬</div><div>No events yet — start a task to record the timeline</div>';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  // ── Controls bar ────────────────────────────────────────────────────────────
+  const ctrl = document.createElement('div');
+  ctrl.className = 'tl-controls';
+  ctrl.innerHTML = `
+    <button class="tl-btn tl-play-btn" title="Play / Pause">▶</button>
+    <button class="tl-btn" id="tl-step-back" title="Step back">◀</button>
+    <button class="tl-btn" id="tl-step-fwd" title="Step forward">▶</button>
+    <div class="tl-sep"></div>
+    <span class="tl-time" id="tl-time-${id}">— / ${events.length}</span>
+    <div style="flex:1"></div>
+    <span class="tl-total-label">${events.length} events · ${TL_TRACKS.length} tracks</span>
+    <span class="tl-speed" id="tl-speed-${id}" title="Playback speed">${tl.speed}x</span>
+  `;
+  wrap.appendChild(ctrl);
+
+  // ── Body: labels + canvas ───────────────────────────────────────────────────
+  const body = document.createElement('div');
+  body.className = 'tl-body';
+
+  // Labels column
+  const labels = document.createElement('div');
+  labels.className = 'tl-labels';
+  const rulerSpacer = document.createElement('div');
+  rulerSpacer.className = 'tl-labels-ruler-spacer';
+  labels.appendChild(rulerSpacer);
+  TL_TRACKS.forEach(t => {
+    const lbl = document.createElement('div');
+    lbl.className = 'tl-track-label';
+    lbl.textContent = t.label;
+    labels.appendChild(lbl);
+  });
+  body.appendChild(labels);
+
+  // Canvas wrap
+  const canvasWrap = document.createElement('div');
+  canvasWrap.className = 'tl-canvas-wrap';
+  canvasWrap.id = 'tl-canvas-' + id;
+
+  const totalW = Math.max(events.length * TL_CLIP_W + 120, canvasWrap.offsetWidth || 600);
+
+  // Ruler
+  const ruler = document.createElement('div');
+  ruler.className = 'tl-ruler';
+  ruler.style.width = totalW + 'px';
+  ruler.id = 'tl-ruler-' + id;
+  for (let i = 0; i <= events.length; i++) {
+    const x = i * TL_CLIP_W;
+    const major = i % 5 === 0;
+    if (major || i % 2 === 0) {
+      const tick = document.createElement('div');
+      tick.className = 'tl-ruler-tick ' + (major ? 'major' : 'minor');
+      tick.style.left = x + 'px';
+      ruler.appendChild(tick);
+    }
+    if (major && i > 0) {
+      const lbl = document.createElement('span');
+      lbl.className = 'tl-ruler-label';
+      lbl.style.left = x + 'px';
+      lbl.textContent = i;
+      ruler.appendChild(lbl);
+    }
+  }
+  ruler.addEventListener('click', (e) => {
+    const rect = ruler.getBoundingClientRect();
+    const x = e.clientX - rect.left + canvasWrap.scrollLeft;
+    const idx = Math.max(0, Math.min(Math.floor(x / TL_CLIP_W), events.length - 1));
+    tlSeekTo(id, idx);
+  });
+  canvasWrap.appendChild(ruler);
+
+  // Tracks + clips
+  const tracksEl = document.createElement('div');
+  tracksEl.className = 'tl-tracks';
+  tracksEl.style.width = totalW + 'px';
+  tracksEl.style.position = 'relative';
+  tracksEl.id = 'tl-tracks-' + id;
+
+  const trackEls = TL_TRACKS.map((_, ti) => {
+    const el = document.createElement('div');
+    el.className = 'tl-track';
+    el.style.width = totalW + 'px';
+    tracksEl.appendChild(el);
+    return el;
+  });
+
+  // Place clips
+  events.forEach((evt, ei) => {
+    const ti = TL_TYPE_TRACK[evt.type];
+    if (ti === undefined) return;
+    const clip = document.createElement('div');
+    clip.className = 'tl-clip ' + (TL_CLIP_CLASS[evt.type] || 'clip-info');
+    if (ei === tl.playIdx) clip.classList.add('selected');
+    clip.style.left = (ei * TL_CLIP_W + 2) + 'px';
+    clip.style.width = (TL_CLIP_W - 4) + 'px';
+    clip.dataset.evtIdx = ei;
+    const icon = TL_ICONS[evt.type] || '•';
+    const label = _tlClipLabel(evt);
+    clip.innerHTML = `<span class="tl-clip-icon">${icon}</span><span class="tl-clip-text">${esc(label)}</span>`;
+    clip.title = label;
+    clip.addEventListener('click', () => tlSeekTo(id, ei));
+    trackEls[ti].appendChild(clip);
+  });
+
+  // Playhead
+  const ph = document.createElement('div');
+  ph.className = 'tl-playhead';
+  ph.id = 'tl-playhead-' + id;
+  ph.style.height = (TL_TRACKS.length * TL_TRACK_H) + 'px';
+  const phHead = document.createElement('div');
+  phHead.className = 'tl-playhead-head';
+  ph.appendChild(phHead);
+  if (tl.playIdx >= 0) {
+    ph.style.left = (tl.playIdx * TL_CLIP_W) + 'px';
+    ph.style.display = 'block';
+  } else {
+    ph.style.display = 'none';
+  }
+  tracksEl.appendChild(ph);
+
+  canvasWrap.appendChild(tracksEl);
+  body.appendChild(canvasWrap);
+  wrap.appendChild(body);
+
+  // ── Detail panel ─────────────────────────────────────────────────────────────
+  const detail = document.createElement('div');
+  detail.className = 'tl-detail';
+  detail.id = 'tl-detail-' + id;
+  detail.innerHTML = `<div class="tl-detail-header"><span class="tl-detail-type" style="color:#282828">Click a clip or press Play</span></div><div class="tl-detail-body" style="color:#222;font-style:italic">The selected event's details will appear here…</div>`;
+  wrap.appendChild(detail);
+  if (tl.playIdx >= 0) _tlRenderDetail(id, tl.playIdx);
+
+  // Wire controls
+  ctrl.querySelector('.tl-play-btn').textContent = tl.playing ? '⏸' : '▶';
+  if (tl.playing) ctrl.querySelector('.tl-play-btn').classList.add('active');
+  ctrl.querySelector('.tl-play-btn').addEventListener('click', () => tlTogglePlay(id));
+  ctrl.querySelector('#tl-step-back').addEventListener('click', () => { tlStopPlay(id); tlSeekTo(id, Math.max(0, tl.playIdx - 1)); });
+  ctrl.querySelector('#tl-step-fwd').addEventListener('click', () => { tlStopPlay(id); tlSeekTo(id, Math.min(events.length - 1, tl.playIdx + 1)); });
+  const speedEl = ctrl.querySelector('#tl-speed-' + id);
+  speedEl.addEventListener('click', () => {
+    const speeds = [0.5, 1, 2, 4];
+    const cur = speeds.indexOf(tl.speed);
+    tl.speed = speeds[(cur + 1) % speeds.length];
+    speedEl.textContent = tl.speed + 'x';
+  });
+
+  if (tl.playIdx >= 0) _tlUpdateTime(id);
+}
+
+function tlSeekTo(id, idx) {
+  const tl = tlFor(id);
+  if (!tl.events.length) return;
+  idx = Math.max(0, Math.min(idx, tl.events.length - 1));
+  tl.playIdx = idx;
+
+  // Move playhead
+  const ph = document.getElementById('tl-playhead-' + id);
+  if (ph) {
+    ph.style.display = 'block';
+    ph.style.left = (idx * TL_CLIP_W) + 'px';
+    // Scroll playhead into view
+    const cw = document.getElementById('tl-canvas-' + id);
+    if (cw) {
+      const x = idx * TL_CLIP_W;
+      const viewL = cw.scrollLeft, viewR = viewL + cw.clientWidth;
+      if (x < viewL + 40)      cw.scrollLeft = Math.max(0, x - 60);
+      else if (x > viewR - 80) cw.scrollLeft = x - cw.clientWidth / 2;
+    }
+  }
+
+  // Highlight selected clip
+  const tracks = document.getElementById('tl-tracks-' + id);
+  if (tracks) {
+    tracks.querySelectorAll('.tl-clip').forEach(c => {
+      c.classList.toggle('selected', +c.dataset.evtIdx === idx);
+    });
+  }
+
+  _tlUpdateTime(id);
+  _tlRenderDetail(id, idx);
+}
+
+function _tlUpdateTime(id) {
+  const tl = tlFor(id);
+  const el = document.getElementById('tl-time-' + id);
+  if (el) el.textContent = `${tl.playIdx + 1} / ${tl.events.length}`;
+}
+
+function _tlRenderDetail(id, idx) {
+  const tl = tlFor(id);
+  const evt = tl.events[idx];
+  if (!evt) return;
+  const detail = document.getElementById('tl-detail-' + id);
+  if (!detail) return;
+
+  const cls = TL_CLIP_CLASS[evt.type] || 'clip-info';
+  const color = TL_TYPE_COLORS[cls] || '#888';
+  const icon = TL_ICONS[evt.type] || '•';
+  const d = evt.data;
+
+  let body = '';
+  if (evt.type === 'tool_use') {
+    body = (d.name || '') + '\n\n' + JSON.stringify(d.params || {}, null, 2);
+  } else if (evt.type === 'tool_result') {
+    body = (d.name || '') + ' → result\n\n' + (d.result || '');
+  } else if (evt.type === 'file_op') {
+    body = `${(d.op || '').toUpperCase()}  ${d.path || ''}\ntool: ${d.tool || ''}`;
+  } else if (d.text) {
+    body = d.text;
+  } else if (d.question) {
+    body = '❓ ' + d.question + (d.options?.length ? '\n\nOptions: ' + d.options.join(', ') : '');
+  } else if (d.message) {
+    body = d.message;
+  } else {
+    body = JSON.stringify(d, null, 2);
+  }
+
+  const typeName = evt.type.replace(/_/g, ' ').toUpperCase();
+
+  // Sources panel (response / stream_live events)
+  const sources = d.sources || [];
+  let sourcesHtml = '';
+  if (sources.length) {
+    const rows = sources.map(s => {
+      if (s.type === 'file_op') {
+        return `<div class="tl-source-row"><span class="tl-source-icon">📁</span><span class="tl-source-name">${esc(s.op || 'file')}</span><span class="tl-source-meta">${esc(s.path || '')}</span></div>`;
+      }
+      const summary = _toolSummary(s.name, s.params || {});
+      return `<div class="tl-source-row"><span class="tl-source-icon">🔧</span><span class="tl-source-name">${esc(s.name)}</span><span class="tl-source-meta">${esc(summary)}</span></div>`;
+    }).join('');
+    sourcesHtml = `<div class="tl-sources"><div class="tl-sources-title">Knowledge Sources (${sources.length})</div>${rows}</div>`;
+  }
+
+  const streamNote = evt.type === 'stream_live'
+    ? `<div style="font-size:10px;color:#2a4a6a;margin-bottom:6px;font-family:sans-serif;animation:tl-pulse .8s ease-in-out infinite">● Streaming…</div>`
+    : '';
+
+  detail.innerHTML = `
+    <div class="tl-detail-header">
+      <span class="tl-detail-type-icon">${icon}</span>
+      <span class="tl-detail-type" style="color:${color}">${typeName}</span>
+      <span class="tl-detail-idx">#${idx + 1}</span>
+      <span class="tl-detail-ts">${evt.ts}</span>
+    </div>
+    <div class="tl-detail-body">${streamNote}${esc(body.slice(0, 1200))}</div>
+    ${sourcesHtml ? `<div style="padding:6px 14px 10px;background:#090909;flex-shrink:0;border-top:1px solid #141414">${sourcesHtml}</div>` : ''}
+  `;
+}
+
+function tlTogglePlay(id) {
+  const tl = tlFor(id);
+  if (tl.playing) tlStopPlay(id);
+  else tlStartPlay(id);
+}
+
+function tlStartPlay(id) {
+  const tl = tlFor(id);
+  if (tl.playIdx >= tl.events.length - 1) tl.playIdx = -1;
+  tl.playing = true;
+  const wrap = document.getElementById('tab-timeline');
+  const btn = wrap?.querySelector('.tl-play-btn');
+  if (btn) { btn.textContent = '⏸'; btn.classList.add('active'); }
+
+  const interval = () => Math.max(150, 600 / (tl.speed || 1));
+  const step = () => {
+    if (!tl.playing) return;
+    const next = tl.playIdx + 1;
+    if (next >= tl.events.length) { tlStopPlay(id); return; }
+    tlSeekTo(id, next);
+    tl.playTimer = setTimeout(step, interval());
+  };
+  tl.playTimer = setTimeout(step, interval());
+}
+
+function tlStopPlay(id) {
+  if (!state.taskTimeline[id]) return;
+  const tl = state.taskTimeline[id];
+  tl.playing = false;
+  if (tl.playTimer) { clearTimeout(tl.playTimer); tl.playTimer = null; }
+  const wrap = document.getElementById('tab-timeline');
+  const btn = wrap?.querySelector('.tl-play-btn');
+  if (btn) { btn.textContent = '▶'; btn.classList.remove('active'); }
 }
 
 // ═══════════════════════════════════════════════════════════════════

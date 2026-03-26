@@ -237,7 +237,7 @@ def run_auto(prompt: str, agent) -> str:
     import agent as agent_module
     from api_client import chat_nonstream
 
-    MAX_AUTO_ITERATIONS = 5
+    MAX_AUTO_ITERATIONS = agent.MAX_TOOL_ITERATIONS
 
     display.print_info("[@auto] Autonomous mode — no user input required.")
 
@@ -298,10 +298,6 @@ def run_auto(prompt: str, agent) -> str:
         except Exception:
             return True  # assume complete on error
 
-    # ── Patch ask_user in the global tool registry ────────────────────────────
-    original_ask_user = agent_module.TOOL_REGISTRY.get("ask_user")
-    agent_module.TOOL_REGISTRY["ask_user"] = _orchestrate
-
     try:
         # ── Display callbacks (same wiring as repl._process) ─────────────────
         def _on_llm_start(in_chars: int = 0):
@@ -355,6 +351,8 @@ def run_auto(prompt: str, agent) -> str:
         worker.on_tool_result  = _on_tool_result
         worker.on_bash_output  = _on_bash_output
         worker.on_llm_activity = _on_llm_activity
+        # Patch ask_user only in this worker's isolated registry — never touches globals
+        worker._tool_registry["ask_user"] = _orchestrate
 
         last_response = ""
         current_prompt = prompt
@@ -399,10 +397,6 @@ def run_auto(prompt: str, agent) -> str:
     finally:
         display.stream_stop()
         display.spinner_stop()
-        if original_ask_user is not None:
-            agent_module.TOOL_REGISTRY["ask_user"] = original_ask_user
-        elif "ask_user" in agent_module.TOOL_REGISTRY:
-            del agent_module.TOOL_REGISTRY["ask_user"]
         # Sync worker history back to session agent so next message has full context
         try:
             for entry in worker._history:
@@ -442,6 +436,9 @@ def run_reason(prompt: str, agent, use_llm_for_ask_user: bool = False) -> str:
     display.print_info('[@reason] Reasoning mode — tool confirmations still required.')
 
     history: list[str] = []
+    # Capture the original ask_user from the global registry for the non-LLM fallback path.
+    # We read it here once — we never patch the global registry.
+    _original_ask_user = agent_module.TOOL_REGISTRY.get("ask_user")
 
     # ── Orchestrator: handle ask_user questions ─────────────
     def _orchestrate(question: str, options: list) -> str:
@@ -479,8 +476,8 @@ def run_reason(prompt: str, agent, use_llm_for_ask_user: bool = False) -> str:
 
             display.print_info(f'[@auto] Orchestrator chose: {answer!r}')
         else:
-            if original_ask_user is not None:
-                answer = original_ask_user(question, options)
+            if _original_ask_user is not None:
+                answer = _original_ask_user(question, options)
             else:
                 # Fallback: choose first option or 'yes' if none provided
                 answer = options[0] if options else 'yes'
@@ -508,10 +505,6 @@ def run_reason(prompt: str, agent, use_llm_for_ask_user: bool = False) -> str:
             return verdict.startswith("COMPLETE")
         except Exception:
             return True  # assume complete on error
-
-    # ── Patch ask_user in the global tool registry ────────────────────────────
-    original_ask_user = agent_module.TOOL_REGISTRY.get("ask_user")
-    agent_module.TOOL_REGISTRY["ask_user"] = _orchestrate
 
     try:
         # ── Display callbacks (same wiring as repl._process) ─────────────────
@@ -566,6 +559,8 @@ def run_reason(prompt: str, agent, use_llm_for_ask_user: bool = False) -> str:
         worker.on_tool_result  = _on_tool_result
         worker.on_bash_output  = _on_bash_output
         worker.on_llm_activity = _on_llm_activity
+        # Patch ask_user only in this worker's isolated registry — never touches globals
+        worker._tool_registry["ask_user"] = _orchestrate
 
         last_response = ""
         current_prompt = prompt
@@ -607,10 +602,6 @@ def run_reason(prompt: str, agent, use_llm_for_ask_user: bool = False) -> str:
     finally:
         display.stream_stop()
         display.spinner_stop()
-        if original_ask_user is not None:
-            agent_module.TOOL_REGISTRY["ask_user"] = original_ask_user
-        elif "ask_user" in agent_module.TOOL_REGISTRY:
-            del agent_module.TOOL_REGISTRY["ask_user"]
         # Sync worker history back to session agent so next message has full context
         try:
             for entry in worker._history:

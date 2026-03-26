@@ -210,7 +210,7 @@ def _is_error(result: str) -> bool:
     return any(result.startswith(p) for p in _ERROR_PREFIXES) or _is_bash_error(result)
 
 
-def execute_tool(name: str, parameters: dict, parse_error: str | None = None) -> str:
+def execute_tool(name: str, parameters: dict, parse_error: str | None = None, registry: dict | None = None) -> str:
     # JSON was malformed — tell the LLM exactly what it sent and the correct format
     if parse_error:
         sig = _TOOL_SIGNATURES.get(name, name)
@@ -221,7 +221,7 @@ def execute_tool(name: str, parameters: dict, parse_error: str | None = None) ->
             f"Please retry with properly formatted JSON parameters."
         )
 
-    fn = TOOL_REGISTRY.get(name)
+    fn = (registry if registry is not None else TOOL_REGISTRY).get(name)
     if fn is None:
         available = "\n".join(f"  {s}" for s in _TOOL_SIGNATURES.values())
         return (
@@ -296,9 +296,11 @@ One tool per turn. Parameters: valid JSON. After each <tool_result>, call the ne
 - Minimal edits: change only what is asked.
 - Questions: use ask_user, never plain text.
 - Bash: Windows commands. [exit_code N≠0] = failure, diagnose and retry.
-- WHEN user mention KS (Knowledge Source) sempre busque pelo knowledge source: com slug=ever-test-01
-- ALWAYS when necessary save/remain/store some important information, save it into a new object in the KS (Knowledge Source)
-- WHEN user request some business information or technical specific information that you don't know, search in KS (Knowledge Source)
+- KNOWLEDGE SOURCE (KS) — proactive saving: whenever you learn something important (business rules, decisions, architecture, credentials format, API details, recurring patterns, user preferences, etc.), save it to the appropriate KS without being asked. Use list_knowledge_sources() to find the best-fit KS; if none fits, create a new one with create_knowledge_source before uploading.
+- ALWAYS save important information to KS: write the content to a temp file first (bash or edit_file), then call upload_to_knowledge_source(file_path, ks_slug).
+- AFTER every upload_to_knowledge_source: call get_ks_objects(slug=<ks_slug>) and confirm the uploaded object appears. If it does NOT appear, report the failure — never claim the save succeeded without this verification.
+- WHEN user requests business or technical information you don't know: call list_knowledge_sources() to find the relevant KS, then search its objects for the answer.
+- DO NOT use get_ks_objects or get_ks_details to browse KS out of curiosity — only use them for post-save verification or when explicitly searching for specific information.
 
 ## Tools
 read_file(path, start_line?, end_line?)
@@ -339,8 +341,8 @@ _RESULT_CONTENT_RE = re.compile(r"<content>(.*?)</content>", re.DOTALL)
 
 
 class Agent:
-    MAX_TOOL_ITERATIONS = 15
-    MAX_CONTINUATION_ITERATIONS = 10
+    MAX_TOOL_ITERATIONS = 30
+    MAX_CONTINUATION_ITERATIONS = 15
 
     # Tools that mutate the filesystem or run shell commands — require user confirmation
     CONFIRM_TOOLS = {"edit_file", "replace_lines", "insert_after_line", "edit_html_attr", "edit_xml_attr", "bash"}
@@ -376,6 +378,8 @@ class Agent:
         self.on_token_count = on_token_count or (lambda i, o: None)
         self.on_llm_activity = on_llm_activity or (lambda t: None)
         self.on_bash_output = on_bash_output or (lambda line, is_stderr: None)
+        # Per-instance tool registry — isolated copy so parallel tasks don't share state
+        self._tool_registry: dict = dict(TOOL_REGISTRY)
         # Conversation history: list of {"user": str, "assistant": str} dicts
         self._history: list[dict] = []
         # True at the start of each run() call; reset after the first _stream_collect
@@ -589,6 +593,7 @@ class Agent:
                     tc["name"],
                     tc["parameters"],
                     parse_error=tc.get("_parse_error"),
+                    registry=self._tool_registry,
                 )
             self.on_tool_result(tc["name"], result_text)
             logger.log_tool_result(tc["name"], result_text)

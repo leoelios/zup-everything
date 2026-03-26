@@ -114,42 +114,36 @@ _ThinkingFilter = lambda on_clean_chunk: _TagStripper("<thinking>", "</thinking>
 def _patch_display(put) -> dict:
     """
     Redirect display module output to the web event queue for this session.
-    Returns a dict of original functions to restore afterward.
+    Uses thread-local overrides so parallel sessions remain fully isolated.
+    Returns a dict of previous thread-local values to restore afterward.
     """
     import display as _display
 
-    saved = {
-        "print_info":        _display.print_info,
-        "print_thinking":    _display.print_thinking,
-        "print_tool_use":    _display.print_tool_use,
-        "print_tool_result": _display.print_tool_result,
-        "print_response":    _display.print_response,
-        "print_separator":   _display.print_separator,
-        "stream_start":      _display.stream_start,
-        "stream_chunk":      _display.stream_chunk,
-        "stream_stop":       _display.stream_stop,
-        "spinner_start":     _display.spinner_start,
-        "spinner_stop":      _display.spinner_stop,
-        "bash_output":       _display.bash_output,
-    }
+    _keys = [
+        "print_info", "print_thinking", "print_tool_use", "print_tool_result",
+        "print_response", "print_separator", "stream_start", "stream_chunk",
+        "stream_stop", "spinner_start", "spinner_stop", "bash_output",
+    ]
+    # Save whatever was previously stored in this thread's local (None = not set)
+    saved = {k: getattr(_display._thread_local, k, None) for k in _keys}
 
     _disp_tool_strip  = _TagStripper("<tool_call>", "</tool_call>",
                                      on_clean_chunk=lambda text: put(_evt("chunk", text=text)))
     _disp_think_strip = _TagStripper("<thinking>", "</thinking>",
                                      on_clean_chunk=_disp_tool_strip.feed)
 
-    _display.print_info        = lambda msg: put(_evt("info", text=str(msg)))
-    _display.print_thinking    = lambda text: put(_evt("thinking", text=str(text)))
-    _display.print_tool_use    = lambda name, params: put(_evt("tool_use", name=name, params=params))
-    _display.print_tool_result = lambda name, result: put(_evt("tool_result", name=name, result=str(result)[:800]))
-    _display.print_response    = lambda text: put(_evt("response", text=str(text))) if text and str(text).strip() else None
-    _display.print_separator   = lambda: None
-    _display.stream_start      = lambda in_chars=0: put(_evt("llm_start", prompt_len=in_chars))
-    _display.stream_chunk      = lambda text: _disp_think_strip.feed(text)
-    _display.stream_stop       = lambda: None
-    _display.spinner_start     = lambda label="", status="": None
-    _display.spinner_stop      = lambda: None
-    _display.bash_output       = lambda line, is_stderr=False: put(_evt("bash_line", line=line, is_stderr=is_stderr))
+    _display._thread_local.print_info        = lambda msg: put(_evt("info", text=str(msg)))
+    _display._thread_local.print_thinking    = lambda text: put(_evt("thinking", text=str(text)))
+    _display._thread_local.print_tool_use    = lambda name, params: put(_evt("tool_use", name=name, params=params))
+    _display._thread_local.print_tool_result = lambda name, result: put(_evt("tool_result", name=name, result=str(result)[:800]))
+    _display._thread_local.print_response    = lambda text: put(_evt("response", text=str(text))) if text and str(text).strip() else None
+    _display._thread_local.print_separator   = lambda: None
+    _display._thread_local.stream_start      = lambda in_chars=0: put(_evt("llm_start", prompt_len=in_chars))
+    _display._thread_local.stream_chunk      = lambda text: _disp_think_strip.feed(text)
+    _display._thread_local.stream_stop       = lambda: None
+    _display._thread_local.spinner_start     = lambda label="", status="": None
+    _display._thread_local.spinner_stop      = lambda: None
+    _display._thread_local.bash_output       = lambda line, is_stderr=False: put(_evt("bash_line", line=line, is_stderr=is_stderr))
 
     return saved
 
@@ -157,7 +151,13 @@ def _patch_display(put) -> dict:
 def _restore_display(saved: dict):
     import display as _display
     for attr, fn in saved.items():
-        setattr(_display, attr, fn)
+        if fn is None:
+            try:
+                delattr(_display._thread_local, attr)
+            except AttributeError:
+                pass
+        else:
+            setattr(_display._thread_local, attr, fn)
 
 
 def _run_agent(session_id: str, message: str, loop: asyncio.AbstractEventLoop):
@@ -215,7 +215,7 @@ def _run_agent(session_id: str, message: str, loop: asyncio.AbstractEventLoop):
         session["pending_ask_user"] = None
         return answer
 
-    agent_module.TOOL_REGISTRY["ask_user"] = web_ask_user
+    ag._tool_registry["ask_user"] = web_ask_user
 
     # ── Extract @modifiers ────────────────────────────────────────────────────
     mods, clean_message = extract_modifiers(message)

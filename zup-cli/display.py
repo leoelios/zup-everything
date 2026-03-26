@@ -1,6 +1,7 @@
 """Terminal output helpers — mimics Claude Code's visual style."""
 
 import json
+import threading as _threading
 import time
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
@@ -11,6 +12,15 @@ from rich.text import Text
 from rich import box
 
 console = Console()
+
+# Thread-local overrides — set by web sessions so parallel tasks stay isolated.
+# Each thread can override any display function without affecting other threads.
+_thread_local = _threading.local()
+
+
+def _tl(name):
+    """Return the thread-local override for *name*, or None."""
+    return getattr(_thread_local, name, None)
 
 # ---------------------------------------------------------------------------
 # Spinner (shown while waiting for API / tool execution)
@@ -126,6 +136,9 @@ def _stop_live() -> None:
 
 
 def spinner_start(label: str = "Thinking…", status: str = "thinking") -> None:
+    override = _tl('spinner_start')
+    if override is not None:
+        return override(label, status)
     global _live, _spinner_view
     _stop_live()
     _spinner_view = _StatusSpinner(label, status)
@@ -139,6 +152,9 @@ def spinner_start(label: str = "Thinking…", status: str = "thinking") -> None:
 
 
 def spinner_stop() -> None:
+    override = _tl('spinner_stop')
+    if override is not None:
+        return override()
     global _spinner_view
     _spinner_view = None
     _stop_live()
@@ -146,6 +162,9 @@ def spinner_stop() -> None:
 
 def bash_output(line: str, is_stderr: bool = False) -> None:
     """Append a real-time bash output line to the active spinner."""
+    override = _tl('bash_output')
+    if override is not None:
+        return override(line, is_stderr)
     if _spinner_view is not None:
         prefix = "[err] " if is_stderr else ""
         _spinner_view.output_lines.append(prefix + line)
@@ -153,6 +172,9 @@ def bash_output(line: str, is_stderr: bool = False) -> None:
 
 def stream_start(in_chars: int = 0) -> None:
     """Begin a live streaming view (replaces spinner during LLM generation)."""
+    override = _tl('stream_start')
+    if override is not None:
+        return override(in_chars)
     global _live, _stream_view
     _stop_live()
     _stream_view = _StreamingView(in_chars=in_chars)
@@ -167,6 +189,9 @@ def stream_start(in_chars: int = 0) -> None:
 
 def stream_chunk(text: str) -> None:
     """Append a streamed token chunk to the live view."""
+    override = _tl('stream_chunk')
+    if override is not None:
+        return override(text)
     if _stream_view is not None:
         _stream_view.text += text
 
@@ -178,6 +203,9 @@ def stream_tokens(input_tokens: int, output_tokens: int) -> None:
 
 def stream_stop() -> None:
     """Stop the streaming live view."""
+    override = _tl('stream_stop')
+    if override is not None:
+        return override()
     global _stream_view, _last_tokens
     if _stream_view is not None:
         _last_tokens = (_stream_view.in_chars, len(_stream_view.text))
@@ -262,6 +290,9 @@ def print_welcome():
 
 def print_thinking(text: str) -> None:
     """Render chain-of-thought in very dim style — like Claude's thinking blocks."""
+    override = _tl('print_thinking')
+    if override is not None:
+        return override(text)
     if not text.strip():
         return
     console.print()
@@ -272,6 +303,9 @@ def print_thinking(text: str) -> None:
 
 
 def print_tool_use(name: str, parameters: dict) -> None:
+    override = _tl('print_tool_use')
+    if override is not None:
+        return override(name, parameters)
     if name == "bash":
         cmd = parameters.get("command", "")
         console.print(f"  [bold cyan]●[/bold cyan] [cyan]bash[/cyan]  [bold white]{cmd}[/bold white]")
@@ -292,6 +326,9 @@ def print_tool_use(name: str, parameters: dict) -> None:
 
 
 def print_tool_result(name: str, result: str) -> None:
+    override = _tl('print_tool_result')
+    if override is not None:
+        return override(name, result)
     lines = result.splitlines()
     preview = lines[0][:120] if lines else ""
     extra = f" [dim](+{len(lines)-1} lines)[/dim]" if len(lines) > 1 else ""
@@ -300,6 +337,9 @@ def print_tool_result(name: str, result: str) -> None:
 
 def print_response(text: str):
     """Render the assistant's final response as markdown."""
+    override = _tl('print_response')
+    if override is not None:
+        return override(text)
     if not text.strip():
         return
     console.print()
@@ -315,10 +355,16 @@ def print_error(message: str):
 
 
 def print_info(message: str):
+    override = _tl('print_info')
+    if override is not None:
+        return override(message)
     console.print(f"[dim]{message}[/dim]")
 
 
 def print_separator() -> None:
+    override = _tl('print_separator')
+    if override is not None:
+        return override()
     console.print(Rule(style="dim"))
     in_t, out_t = _last_tokens
     if out_t:
